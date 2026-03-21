@@ -59,6 +59,8 @@ public class PeerSession implements Closeable {
 
     /**
      * Performs the handshake as the initiator (client side).
+     *
+     * Flow: AUTH_REQUEST → AUTH_RESPONSE → AUTH_SUCCESS
      */
     public void handshakeAsInitiator() throws IOException {
         SecureRandom random = new SecureRandom();
@@ -67,19 +69,19 @@ public class PeerSession implements Closeable {
 
         KeyExchange kx = new KeyExchange();
 
-        // Send HELLO
-        Messages.Hello hello = new Messages.Hello();
-        hello.identity_pub = localIdentity.getPublicKeyBase64();
-        hello.ephemeral_pub = Base64.getEncoder().encodeToString(kx.getPublicKeyBytes());
-        hello.nonce = Base64.getEncoder().encodeToString(nonceA);
-        framer.send(Messages.serialize(hello));
+        // Send AUTH_REQUEST
+        Messages.AuthRequest req = new Messages.AuthRequest();
+        req.identity_pub = localIdentity.getPublicKeyBase64();
+        req.ephemeral_pub = Base64.getEncoder().encodeToString(kx.getPublicKeyBytes());
+        req.nonce = Base64.getEncoder().encodeToString(nonceA);
+        framer.send(Messages.serialize(req));
 
-        // Receive HELLO_REPLY
+        // Receive AUTH_RESPONSE
         String replyJson = framer.receive();
-        if (Messages.typeOf(replyJson) != MessageType.HELLO_REPLY) {
-            throw new IOException("Expected HELLO_REPLY, got: " + replyJson);
+        if (Messages.typeOf(replyJson) != MessageType.AUTH_RESPONSE) {
+            throw new IOException("Expected AUTH_RESPONSE, got: " + replyJson);
         }
-        Messages.HelloReply reply = Messages.deserialize(replyJson, Messages.HelloReply.class);
+        Messages.AuthResponse reply = Messages.deserialize(replyJson, Messages.AuthResponse.class);
 
         byte[] remotePub = Base64.getDecoder().decode(reply.identity_pub);
         byte[] remoteEph = Base64.getDecoder().decode(reply.ephemeral_pub);
@@ -97,14 +99,14 @@ public class PeerSession implements Closeable {
         // Trust check
         remoteIdentityPubBase64 = reply.identity_pub;
         if (!verifyTrust(remoteIdentityPubBase64)) {
-            sendError("UNTRUSTED_KEY", "Peer not trusted");
+            framer.send(Messages.serialize(new Messages.AuthFail("Peer not trusted")));
             throw new IOException("Remote peer not trusted");
         }
 
-        // Send AUTH: Sign_A(nonce_b || eph_b || eph_a)
+        // Send AUTH_SUCCESS: Sign_A(nonce_b || eph_b || eph_a)
         byte[] sigMessageA = concat(nonceB, remoteEph, localEph);
         byte[] sigA = localIdentity.sign(sigMessageA);
-        Messages.Auth auth = new Messages.Auth();
+        Messages.AuthSuccess auth = new Messages.AuthSuccess();
         auth.signature = Base64.getEncoder().encodeToString(sigA);
         framer.send(Messages.serialize(auth));
 
@@ -121,23 +123,25 @@ public class PeerSession implements Closeable {
 
     /**
      * Performs the handshake as the responder (server side).
+     *
+     * Flow: AUTH_REQUEST → AUTH_RESPONSE → AUTH_SUCCESS
      */
     public void handshakeAsResponder() throws IOException {
-        // Receive HELLO
-        String helloJson = framer.receive();
-        if (Messages.typeOf(helloJson) != MessageType.HELLO) {
-            throw new IOException("Expected HELLO, got: " + helloJson);
+        // Receive AUTH_REQUEST
+        String reqJson = framer.receive();
+        if (Messages.typeOf(reqJson) != MessageType.AUTH_REQUEST) {
+            throw new IOException("Expected AUTH_REQUEST, got: " + reqJson);
         }
-        Messages.Hello hello = Messages.deserialize(helloJson, Messages.Hello.class);
+        Messages.AuthRequest req = Messages.deserialize(reqJson, Messages.AuthRequest.class);
 
-        byte[] remotePub = Base64.getDecoder().decode(hello.identity_pub);
-        byte[] remoteEph = Base64.getDecoder().decode(hello.ephemeral_pub);
-        byte[] nonceA = Base64.getDecoder().decode(hello.nonce);
+        byte[] remotePub = Base64.getDecoder().decode(req.identity_pub);
+        byte[] remoteEph = Base64.getDecoder().decode(req.ephemeral_pub);
+        byte[] nonceA = Base64.getDecoder().decode(req.nonce);
 
         // Trust check
-        remoteIdentityPubBase64 = hello.identity_pub;
+        remoteIdentityPubBase64 = req.identity_pub;
         if (!verifyTrust(remoteIdentityPubBase64)) {
-            sendError("UNTRUSTED_KEY", "Peer not trusted");
+            framer.send(Messages.serialize(new Messages.AuthFail("Peer not trusted")));
             throw new IOException("Remote peer not trusted");
         }
 
@@ -152,20 +156,20 @@ public class PeerSession implements Closeable {
         byte[] sigMessage = concat(nonceA, remoteEph, localEph);
         byte[] sig = localIdentity.sign(sigMessage);
 
-        // Send HELLO_REPLY
-        Messages.HelloReply reply = new Messages.HelloReply();
-        reply.identity_pub = localIdentity.getPublicKeyBase64();
-        reply.ephemeral_pub = Base64.getEncoder().encodeToString(localEph);
-        reply.nonce = Base64.getEncoder().encodeToString(nonceB);
-        reply.signature = Base64.getEncoder().encodeToString(sig);
-        framer.send(Messages.serialize(reply));
+        // Send AUTH_RESPONSE
+        Messages.AuthResponse response = new Messages.AuthResponse();
+        response.identity_pub = localIdentity.getPublicKeyBase64();
+        response.ephemeral_pub = Base64.getEncoder().encodeToString(localEph);
+        response.nonce = Base64.getEncoder().encodeToString(nonceB);
+        response.signature = Base64.getEncoder().encodeToString(sig);
+        framer.send(Messages.serialize(response));
 
-        // Receive AUTH
+        // Receive AUTH_SUCCESS
         String authJson = framer.receive();
-        if (Messages.typeOf(authJson) != MessageType.AUTH) {
-            throw new IOException("Expected AUTH, got: " + authJson);
+        if (Messages.typeOf(authJson) != MessageType.AUTH_SUCCESS) {
+            throw new IOException("Expected AUTH_SUCCESS, got: " + authJson);
         }
-        Messages.Auth auth = Messages.deserialize(authJson, Messages.Auth.class);
+        Messages.AuthSuccess auth = Messages.deserialize(authJson, Messages.AuthSuccess.class);
 
         // Verify initiator's signature: Sign_A(nonce_b || eph_b || eph_a)
         byte[] sigMessageA = concat(nonceB, localEph, remoteEph);

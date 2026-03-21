@@ -77,13 +77,12 @@ class FileTransferTest {
         req.name = "testfile.txt";
         aliceSession.sendEncrypted(Messages.serialize(req));
 
-        // Bob receives the request and accepts
+        // Bob receives the request and accepts (sends FILE_ACCEPT then FILE_TRANSFER chunks then FILE_COMPLETE)
         String reqJson = bobSession.receiveEncrypted();
         assertEquals(MessageType.FILE_REQUEST, Messages.typeOf(reqJson));
-        Messages.FileResponse resp = new Messages.FileResponse();
-        resp.hash = expectedHash;
-        resp.accepted = true;
-        bobSession.sendEncrypted(Messages.serialize(resp));
+        Messages.FileAccept accept = new Messages.FileAccept();
+        accept.hash = expectedHash;
+        bobSession.sendEncrypted(Messages.serialize(accept));
 
         // Bob sends file data in chunks
         int chunkSize = ProtocolConstants.MAX_CHUNK_BYTES;
@@ -93,7 +92,7 @@ class FileTransferTest {
         for (int i = 0; i < totalChunks; i++) {
             int offset = i * chunkSize;
             int len = Math.min(chunkSize, fileContent.length - offset);
-            Messages.FileData data = new Messages.FileData();
+            Messages.FileTransfer data = new Messages.FileTransfer();
             data.hash = expectedHash;
             data.chunk_index = i;
             data.total_chunks = totalChunks;
@@ -101,17 +100,18 @@ class FileTransferTest {
                     Arrays.copyOfRange(fileContent, offset, offset + len));
             bobSession.sendEncrypted(Messages.serialize(data));
         }
+        bobSession.sendEncrypted(Messages.serialize(new Messages.FileComplete(expectedHash)));
 
-        // Alice receives consent response
+        // Alice receives FILE_ACCEPT
         String respJson = aliceSession.receiveEncrypted();
-        Messages.FileResponse parsedResp = Messages.deserialize(respJson, Messages.FileResponse.class);
-        assertTrue(parsedResp.accepted);
+        assertEquals(MessageType.FILE_ACCEPT, Messages.typeOf(respJson));
 
-        // Alice receives and reassembles chunks
+        // Alice receives and reassembles FILE_TRANSFER chunks until FILE_COMPLETE
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        for (int i = 0; i < totalChunks; i++) {
+        while (true) {
             String dataJson = aliceSession.receiveEncrypted();
-            Messages.FileData chunk = Messages.deserialize(dataJson, Messages.FileData.class);
+            if (Messages.typeOf(dataJson) == MessageType.FILE_COMPLETE) break;
+            Messages.FileTransfer chunk = Messages.deserialize(dataJson, Messages.FileTransfer.class);
             bos.write(Base64.getDecoder().decode(chunk.data));
         }
 

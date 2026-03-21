@@ -104,7 +104,12 @@ public class App implements InputProvider {
             encryptedStore = new EncryptedFileStore(dataDir.resolve("store"), passphrase);
             consentManager = new ConsentManager((InputProvider) this);
 
-            tcpServer = new TcpServer(0);
+            // Try group-agreed port 6767; fall back to random if already bound (e.g. two instances on same machine)
+            try {
+                tcpServer = new TcpServer(ProtocolConstants.DEFAULT_PORT);
+            } catch (java.net.BindException e) {
+                tcpServer = new TcpServer(0);
+            }
             int port = tcpServer.getPort();
             System.out.println("[+] Listening on port " + port);
 
@@ -291,9 +296,12 @@ public class App implements InputProvider {
         session.sendEncrypted(Messages.serialize(req));
 
         String respJson = session.receiveEncrypted();
-        Messages.FileResponse resp = Messages.deserialize(respJson, Messages.FileResponse.class);
-        if (!resp.accepted) {
+        if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
             System.out.println("[!] " + name + " rejected the file request.");
+            return;
+        }
+        if (Messages.typeOf(respJson) != MessageType.FILE_ACCEPT) {
+            System.out.println("[!] Unexpected response: " + respJson);
             return;
         }
 
@@ -342,8 +350,7 @@ public class App implements InputProvider {
                     session.sendEncrypted(Messages.serialize(req));
 
                     String respJson = session.receiveEncrypted();
-                    Messages.FileResponse resp = Messages.deserialize(respJson, Messages.FileResponse.class);
-                    if (!resp.accepted) {
+                    if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
                         System.out.println("[!] " + entry.getKey() + " rejected the request.");
                         continue;
                     }
@@ -371,11 +378,12 @@ public class App implements InputProvider {
                 System.out.println("[!] Transfer error: " + err.message);
                 return;
             }
-            Messages.FileData data = Messages.deserialize(dataJson, Messages.FileData.class);
+            if (type == MessageType.FILE_COMPLETE) {
+                break;
+            }
+            Messages.FileTransfer data = Messages.deserialize(dataJson, Messages.FileTransfer.class);
             totalChunks = data.total_chunks;
             chunks.put(data.chunk_index, Base64.getDecoder().decode(data.data));
-
-            if (chunks.size() >= totalChunks) break;
         }
 
         // Reassemble
@@ -434,9 +442,12 @@ public class App implements InputProvider {
         session.sendEncrypted(Messages.serialize(offer));
 
         String respJson = session.receiveEncrypted();
-        Messages.FileOfferResponse resp = Messages.deserialize(respJson, Messages.FileOfferResponse.class);
-        if (!resp.accepted) {
+        if (Messages.typeOf(respJson) == MessageType.FILE_OFFER_DENY) {
             System.out.println("[!] " + name + " rejected the file.");
+            return;
+        }
+        if (Messages.typeOf(respJson) != MessageType.FILE_OFFER_ACCEPT) {
+            System.out.println("[!] Unexpected response to file offer: " + respJson);
             return;
         }
 
@@ -455,13 +466,14 @@ public class App implements InputProvider {
             int len = Math.min(chunkSize, fileBytes.length - offset);
             byte[] chunk = Arrays.copyOfRange(fileBytes, offset, offset + len);
 
-            Messages.FileData data = new Messages.FileData();
+            Messages.FileTransfer data = new Messages.FileTransfer();
             data.hash = hash;
             data.chunk_index = i;
             data.total_chunks = totalChunks;
             data.data = Base64.getEncoder().encodeToString(chunk);
             session.sendEncrypted(Messages.serialize(data));
         }
+        session.sendEncrypted(Messages.serialize(new Messages.FileComplete(hash)));
     }
 
     private void handleIncomingConnection(Socket socket) {
@@ -494,12 +506,10 @@ public class App implements InputProvider {
                     case FILE_REQUEST -> {
                         Messages.FileRequest req = Messages.deserialize(json, Messages.FileRequest.class);
                         boolean accepted = consentManager.promptFileRequest(peerName, req.name, req.hash);
-                        Messages.FileResponse resp = new Messages.FileResponse();
-                        resp.hash = req.hash;
-                        resp.accepted = accepted;
-                        session.sendEncrypted(Messages.serialize(resp));
-
                         if (accepted) {
+                            Messages.FileAccept accept = new Messages.FileAccept();
+                            accept.hash = req.hash;
+                            session.sendEncrypted(Messages.serialize(accept));
                             Optional<Path> file = fileManager.getFileByHash(req.hash);
                             if (file.isPresent()) {
                                 sendFileData(session, file.get(), req.hash);
@@ -507,18 +517,22 @@ public class App implements InputProvider {
                                 session.sendEncrypted(Messages.serialize(
                                         new Messages.Error("FILE_NOT_FOUND", "File not available")));
                             }
+                        } else {
+                            session.sendEncrypted(Messages.serialize(new Messages.FileDeny(req.hash, "Request denied")));
                         }
                     }
                     case FILE_OFFER -> {
                         Messages.FileOffer offer = Messages.deserialize(json, Messages.FileOffer.class);
                         boolean accepted = consentManager.promptFileOffer(peerName, offer.name, offer.size, offer.hash);
-                        Messages.FileOfferResponse resp = new Messages.FileOfferResponse();
-                        resp.hash = offer.hash;
-                        resp.accepted = accepted;
-                        session.sendEncrypted(Messages.serialize(resp));
-
                         if (accepted) {
+                            Messages.FileOfferAccept accept = new Messages.FileOfferAccept();
+                            accept.hash = offer.hash;
+                            session.sendEncrypted(Messages.serialize(accept));
                             receiveFileData(session, offer.hash, offer.name, session.getRemoteIdentityPubBase64());
+                        } else {
+                            Messages.FileOfferDeny deny = new Messages.FileOfferDeny();
+                            deny.hash = offer.hash;
+                            session.sendEncrypted(Messages.serialize(deny));
                         }
                     }
                     case KEY_MIGRATION -> {

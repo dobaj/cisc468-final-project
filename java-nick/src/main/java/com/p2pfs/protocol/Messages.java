@@ -18,23 +18,32 @@ public final class Messages {
 
     public static MessageType typeOf(String json) {
         JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-        return MessageType.valueOf(obj.get("type").getAsString());
+        String typeName = obj.get("type").getAsString();
+        try {
+            return MessageType.valueOf(typeName);
+        } catch (IllegalArgumentException e) {
+            return MessageType.ERROR;
+        }
     }
 
     public static <T> T deserialize(String json, Class<T> clazz) {
         return GSON.fromJson(json, clazz);
     }
 
-    public static class Hello {
-        public final String type = MessageType.HELLO.name();
+    // ── Handshake ──────────────────────────────────────────────────────────────
+
+    /** Initiator opens authentication: sends identity pub key, ephemeral key, nonce. */
+    public static class AuthRequest {
+        public final String type = MessageType.AUTH_REQUEST.name();
         public int version = ProtocolConstants.VERSION;
         public String identity_pub;
         public String ephemeral_pub;
         public String nonce;
     }
 
-    public static class HelloReply {
-        public final String type = MessageType.HELLO_REPLY.name();
+    /** Responder replies with its own keys + its signature over the exchange. */
+    public static class AuthResponse {
+        public final String type = MessageType.AUTH_RESPONSE.name();
         public int version = ProtocolConstants.VERSION;
         public String identity_pub;
         public String ephemeral_pub;
@@ -42,16 +51,31 @@ public final class Messages {
         public String signature;
     }
 
-    public static class Auth {
-        public final String type = MessageType.AUTH.name();
+    /** Initiator confirms authentication by sending its own signature. */
+    public static class AuthSuccess {
+        public final String type = MessageType.AUTH_SUCCESS.name();
         public String signature;
     }
 
+    /** Sent when authentication cannot proceed (untrusted key, bad signature, etc.). */
+    public static class AuthFail {
+        public final String type = MessageType.AUTH_FAIL.name();
+        public String reason;
+
+        public AuthFail() {}
+        public AuthFail(String reason) { this.reason = reason; }
+    }
+
+    // ── Session envelope ───────────────────────────────────────────────────────
+
+    /** AES-256-GCM encrypted wrapper for all post-handshake messages. */
     public static class Encrypted {
         public final String type = MessageType.ENCRYPTED.name();
         public String iv;
         public String ciphertext;
     }
+
+    // ── File listing ───────────────────────────────────────────────────────────
 
     public static class FileListRequest {
         public final String type = MessageType.FILE_LIST_REQUEST.name();
@@ -78,18 +102,34 @@ public final class Messages {
         public List<FileEntry> files;
     }
 
+    // ── File pull (requester → owner) ──────────────────────────────────────────
+
+    /** Requester asks for a specific file by hash + name. */
     public static class FileRequest {
         public final String type = MessageType.FILE_REQUEST.name();
         public String hash;
         public String name;
     }
 
-    public static class FileResponse {
-        public final String type = MessageType.FILE_RESPONSE.name();
+    /** Owner accepts the file request; data transfer will follow. */
+    public static class FileAccept {
+        public final String type = MessageType.FILE_ACCEPT.name();
         public String hash;
-        public boolean accepted;
     }
 
+    /** Owner denies the file request. */
+    public static class FileDeny {
+        public final String type = MessageType.FILE_DENY.name();
+        public String hash;
+        public String reason;
+
+        public FileDeny() {}
+        public FileDeny(String hash, String reason) { this.hash = hash; this.reason = reason; }
+    }
+
+    // ── File push (sender → receiver) ─────────────────────────────────────────
+
+    /** Sender offers a file; receiver must consent before transfer begins. */
     public static class FileOffer {
         public final String type = MessageType.FILE_OFFER.name();
         public String name;
@@ -97,19 +137,39 @@ public final class Messages {
         public String hash;
     }
 
-    public static class FileOfferResponse {
-        public final String type = MessageType.FILE_OFFER_RESPONSE.name();
+    /** Receiver accepts the file offer. */
+    public static class FileOfferAccept {
+        public final String type = MessageType.FILE_OFFER_ACCEPT.name();
         public String hash;
-        public boolean accepted;
     }
 
-    public static class FileData {
-        public final String type = MessageType.FILE_DATA.name();
+    /** Receiver denies the file offer. */
+    public static class FileOfferDeny {
+        public final String type = MessageType.FILE_OFFER_DENY.name();
+        public String hash;
+    }
+
+    // ── File data transfer ─────────────────────────────────────────────────────
+
+    /** One chunk of file data. chunk_index is 0-based; total_chunks is the full count. */
+    public static class FileTransfer {
+        public final String type = MessageType.FILE_TRANSFER.name();
         public String hash;
         public int chunk_index;
         public int total_chunks;
         public String data;
     }
+
+    /** Sent by the sender after all FILE_TRANSFER chunks to signal end-of-file. */
+    public static class FileComplete {
+        public final String type = MessageType.FILE_COMPLETE.name();
+        public String hash;
+
+        public FileComplete() {}
+        public FileComplete(String hash) { this.hash = hash; }
+    }
+
+    // ── Key migration ──────────────────────────────────────────────────────────
 
     public static class KeyMigration {
         public final String type = MessageType.KEY_MIGRATION.name();
@@ -117,6 +177,8 @@ public final class Messages {
         public String signature_old;
         public String signature_new;
     }
+
+    // ── Error ──────────────────────────────────────────────────────────────────
 
     public static class Error {
         public final String type = MessageType.ERROR.name();

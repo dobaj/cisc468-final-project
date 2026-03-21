@@ -77,20 +77,22 @@ This is the most important part to get right. It happens in three messages:
 
 ```
 Initiator (the one who opened the TCP connection)
-    ──── HELLO ────>
-                      Responder (the one listening)
-    <── HELLO_REPLY ──
-    ──── AUTH ──────>
-                      [both sides now have the session key]
+    ──── AUTH_REQUEST ────>
+                            Responder (the one listening)
+    <── AUTH_RESPONSE ──────
+    ──── AUTH_SUCCESS ────>
+                            [both sides now have the session key]
 ```
 
-### Step 1: HELLO (Initiator -> Responder)
+If the trust check fails on either side, an `AUTH_FAIL` is sent and the connection closes.
+
+### Step 1: AUTH_REQUEST (Initiator → Responder)
 
 The initiator sends their identity public key, a fresh ephemeral X25519 public key, and a random 32-byte nonce.
 
 ```json
 {
-  "type": "HELLO",
+  "type": "AUTH_REQUEST",
   "version": 1,
   "identity_pub": "<base64, 32 bytes>",
   "ephemeral_pub": "<base64, 32 bytes>",
@@ -98,13 +100,13 @@ The initiator sends their identity public key, a fresh ephemeral X25519 public k
 }
 ```
 
-### Step 2: HELLO_REPLY (Responder -> Initiator)
+### Step 2: AUTH_RESPONSE (Responder → Initiator)
 
 The responder sends the same fields, plus a signature that proves they own their identity key.
 
 ```json
 {
-  "type": "HELLO_REPLY",
+  "type": "AUTH_RESPONSE",
   "version": 1,
   "identity_pub": "<base64, 32 bytes>",
   "ephemeral_pub": "<base64, 32 bytes>",
@@ -124,22 +126,33 @@ signature = Ed25519_Sign(responder_private_key, bytes_to_sign)
 
 The order matters. If you get it wrong, the other client won't be able to verify your signature, and the handshake will fail silently. This is another common interop bug.
 
-### Step 3: AUTH (Initiator -> Responder)
+### Step 3: AUTH_SUCCESS (Initiator → Responder)
 
 The initiator sends their own signature to prove they own their identity key.
 
 ```json
 {
-  "type": "AUTH",
+  "type": "AUTH_SUCCESS",
   "signature": "<base64>"
 }
 ```
 
-**Signature computation (note the order is swapped compared to HELLO_REPLY):**
+**Signature computation (note the order is swapped compared to AUTH_RESPONSE):**
 
 ```
 bytes_to_sign = responder_nonce + responder_ephemeral_pub + initiator_ephemeral_pub
 signature = Ed25519_Sign(initiator_private_key, bytes_to_sign)
+```
+
+### AUTH_FAIL (either side → the other)
+
+Sent whenever authentication cannot proceed — trust rejected, signature bad, etc. Connection closes immediately after.
+
+```json
+{
+  "type": "AUTH_FAIL",
+  "reason": "Peer not trusted"
+}
 ```
 
 ### After the Handshake: Deriving the Session Key
@@ -153,14 +166,14 @@ info = "p2p-session"    (as UTF-8 bytes)
 session_key = HKDF-SHA256(ikm=shared_secret, salt=salt, info=info, output_length=32)
 ```
 
-`initiator_nonce` is **always** the nonce from the HELLO message. `responder_nonce` is **always** the nonce from the HELLO_REPLY. Both sides must use the same order regardless of whether they initiated or responded.
+`initiator_nonce` is **always** the nonce from `AUTH_REQUEST`. `responder_nonce` is **always** the nonce from `AUTH_RESPONSE`. Both sides must use the same order regardless of which role they played.
 
 ### Trust Verification
 
 After verifying the signature, each side checks the remote peer's identity key against their local trust store:
 
 - **Already trusted:** Proceed normally.
-- **Unknown key:** Show the fingerprint to the user and ask them to verify it out-of-band. If they accept, save it to the trust store. If they reject, send an ERROR and close.
+- **Unknown key:** Show the fingerprint to the user and ask them to verify it out-of-band. If they accept, save it to the trust store. If they reject, send `AUTH_FAIL` and close.
 - **Key mismatch (known contact, different key):** This could be an attack. Warn the user and reject.
 
 ---
@@ -214,7 +227,7 @@ Request a peer's shared files. **No consent required** — the remote peer just 
 
 The `origin` field is important: it tells you who originally shared this file. If Alice shares a file, Bob downloads it, and then you get it from Bob, the `origin` is still Alice's public key. This is how you verify the file hasn't been tampered with when fetching from a third party (requirement #5).
 
-### FILE_REQUEST / FILE_RESPONSE
+### FILE_REQUEST / FILE_ACCEPT / FILE_DENY
 
 Ask a peer for a specific file. **Requires their consent** — they see a prompt and choose to accept or reject.
 
@@ -222,31 +235,45 @@ Ask a peer for a specific file. **Requires their consent** — they see a prompt
 { "type": "FILE_REQUEST", "hash": "a3b2c4...", "name": "photo.jpg" }
 ```
 
+If accepted, the peer sends `FILE_ACCEPT` and immediately starts sending `FILE_TRANSFER` chunks:
+
 ```json
-{ "type": "FILE_RESPONSE", "hash": "a3b2c4...", "accepted": true }
+{ "type": "FILE_ACCEPT", "hash": "a3b2c4..." }
 ```
 
-If `accepted` is `true`, the peer immediately starts sending FILE_DATA messages. If `false`, nothing else happens for this request.
+If rejected:
 
-### FILE_OFFER / FILE_OFFER_RESPONSE
+```json
+{ "type": "FILE_DENY", "hash": "a3b2c4...", "reason": "Request denied" }
+```
 
-Push a file to a peer (the reverse direction). Also **requires consent**.
+### FILE_OFFER / FILE_OFFER_ACCEPT / FILE_OFFER_DENY
+
+Push a file to a peer (the reverse direction — sender initiates). Also **requires consent**.
 
 ```json
 { "type": "FILE_OFFER", "name": "doc.pdf", "size": 51200, "hash": "b4c5d6..." }
 ```
 
+If the receiver accepts:
+
 ```json
-{ "type": "FILE_OFFER_RESPONSE", "hash": "b4c5d6...", "accepted": true }
+{ "type": "FILE_OFFER_ACCEPT", "hash": "b4c5d6..." }
 ```
 
-### FILE_DATA
+If the receiver declines:
 
-Files are sent in chunks. Each chunk is its own message.
+```json
+{ "type": "FILE_OFFER_DENY", "hash": "b4c5d6..." }
+```
+
+### FILE_TRANSFER / FILE_COMPLETE
+
+Files are sent in chunks. Each chunk is its own `FILE_TRANSFER` message. After the last chunk, a `FILE_COMPLETE` signals end-of-file.
 
 ```json
 {
-  "type": "FILE_DATA",
+  "type": "FILE_TRANSFER",
   "hash": "a3b2c4...",
   "chunk_index": 0,
   "total_chunks": 3,
@@ -254,9 +281,13 @@ Files are sent in chunks. Each chunk is its own message.
 }
 ```
 
+```json
+{ "type": "FILE_COMPLETE", "hash": "a3b2c4..." }
+```
+
 - Max chunk size: **1 MiB** (before Base64 encoding).
 - Chunks must be sent in order: 0, 1, 2, etc.
-- After receiving all chunks, the receiver reassembles the file and computes its SHA-256. If it doesn't match `hash`, the file was tampered with — discard it and warn the user.
+- The receiver reassembles on `FILE_COMPLETE` and computes SHA-256. If it doesn't match `hash`, the file was tampered with — discard it and warn the user.
 
 ### KEY_MIGRATION
 
@@ -304,16 +335,20 @@ Standard error codes:
 
 Each client advertises itself on the local network using mDNS so other peers can find it automatically.
 
+**TCP port:** The group-agreed default is **6767**. mDNS advertises the actual port each peer is listening on, so discovery works correctly even if a peer can't bind to 6767 (e.g., two instances on the same machine — the second one falls back to a random port). Always trust the mDNS-advertised port, not an assumed constant.
+
 **What to register:**
 - Service type: `_p2pfs._tcp.local.`
 - Instance name: whatever the user picked as their peer name
-- Port: the TCP port you're listening on
+- Port: the TCP port you're listening on (ideally 6767, see above)
 - TXT records: `fingerprint=<first 32 hex chars of your SHA-256 fingerprint>` and `version=1`
 
 **What to browse for:**
 - Continuously listen for other `_p2pfs._tcp.local.` services. When one appears, show the user the peer's name, IP, port, and fingerprint.
 
 When a peer shuts down, it should unregister its service. Other peers will also notice the departure through mDNS TTL expiry.
+
+> **Note:** mDNS uses the standard multicast address (224.0.0.251 / port 5353) internally — you don't need to manage this yourself. The "discovery port 6868" mentioned in early group notes referred to a different approach and is **not used**; mDNS handles everything automatically.
 
 ---
 
@@ -389,8 +424,8 @@ Contacts who were offline during migration won't get the message. When they try 
 Things that tend to break when three different languages try to talk to each other:
 
 1. **Byte order in the length prefix.** Must be big-endian. Java and Python default to this, but verify your Go implementation.
-2. **Signature byte concatenation order.** The order is different for HELLO_REPLY vs AUTH. Re-read Section 4 carefully.
+2. **Signature byte concatenation order.** The order is different for `AUTH_RESPONSE` vs `AUTH_SUCCESS`. Re-read Section 4 carefully.
 3. **Base64 variant.** Use standard Base64 (not URL-safe, not unpadded). Java's `Base64.getEncoder()`, Python's `base64.b64encode()`, and Go's `base64.StdEncoding` all use the standard variant.
-4. **HKDF salt order.** Always `initiator_nonce + responder_nonce`, regardless of which side you are.
+4. **HKDF salt order.** Always `AUTH_REQUEST nonce + AUTH_RESPONSE nonce` (i.e., initiator's nonce first), regardless of which side you are.
 5. **Hash encoding.** File hashes are lowercase hex. Key fingerprints are also lowercase hex. Don't mix these up with Base64.
 6. **GCM tag.** Most libraries append the tag to the ciphertext automatically. Don't try to separate them — just send `ciphertext + tag` together as the `ciphertext` field and let the decryption function handle it.

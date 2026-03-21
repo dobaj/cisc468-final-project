@@ -2,6 +2,8 @@ package com.p2pfs.protocol;
 
 public final class ProtocolConstants {
     public static final int VERSION = 1;
+    /** Group-agreed TCP port. mDNS advertises the actual port, so peers discover each other even when this falls back. */
+    public static final int DEFAULT_PORT = 6767;
     public static final int LENGTH_PREFIX_BYTES = 4;
     public static final int MAX_PAYLOAD_BYTES = 10 * 1024 * 1024; // 10 MiB
     public static final int MAX_CHUNK_BYTES = 1024 * 1024; // 1 MiB

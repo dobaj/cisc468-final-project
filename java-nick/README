@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is the Java implementation of a peer-to-peer secure file sharing system built for CISC 468 (Cryptography, Winter 2026). It interoperates with the Python and Go clients in this repository using a shared protocol defined in [`protocol/protocol.md`](../protocol/protocol.md).
+This is the Java implementation of a P2P secure file sharing system built for CISC 468. It operates with the Python and Go clients in this repository using a shared protocol defined in [`protocol/protocol.md`](../protocol/protocol.md).
 
 ### Security Features
 
