@@ -12,14 +12,17 @@ import com.p2pfs.trust.TrustStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayInputStream;
+import com.p2pfs.InputProvider;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -45,7 +48,8 @@ class FileTransferTest {
         Files.write(bobFile, fileContent);
         String expectedHash = FileHash.hashFile(bobFile);
 
-        Scanner noInput = new Scanner(new ByteArrayInputStream(new byte[0]));
+        BlockingQueue<String> q = new LinkedBlockingQueue<>();
+        InputProvider noInput = () -> { try { return q.take(); } catch (InterruptedException e) { return "n"; } };
 
         TcpServer server = new TcpServer(0);
         int port = server.getPort();

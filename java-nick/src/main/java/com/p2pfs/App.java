@@ -14,9 +14,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.util.*;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class App {
+public class App implements InputProvider {
 
     private Identity identity;
     private TrustStore trustStore;
@@ -26,24 +29,64 @@ public class App {
     private ConsentManager consentManager;
     private MdnsService mdnsService;
     private TcpServer tcpServer;
-    private final Scanner scanner = new Scanner(System.in);
+    // Commands go here (read by the command loop)
+    private final BlockingQueue<String> commandQueue = new LinkedBlockingQueue<>();
+    // When a consent/trust prompt is active, its dedicated response queue is registered here.
+    // The stdin reader routes input to this queue instead of commandQueue.
+    private final AtomicReference<BlockingQueue<String>> promptReceiver = new AtomicReference<>(null);
     private final Map<String, PeerSession> activeSessions = new ConcurrentHashMap<>();
     private Path dataDir;
+
+    /**
+     * Called by consent/trust prompt handlers (on background threads).
+     * Registers a dedicated response queue so the stdin router bypasses the command loop.
+     */
+    @Override
+    public String readLine() {
+        BlockingQueue<String> q = new LinkedBlockingQueue<>();
+        promptReceiver.set(q);
+        try {
+            return q.take();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } finally {
+            promptReceiver.compareAndSet(q, null);
+        }
+    }
 
     public static void main(String[] args) {
         new App().run();
     }
 
     private void run() {
+        // Single daemon thread reads stdin and routes lines:
+        //   - if a prompt handler is waiting: send to its dedicated queue
+        //   - otherwise: send to the command queue
+        Scanner stdinScanner = new Scanner(System.in);
+        Thread stdinThread = new Thread(() -> {
+            while (stdinScanner.hasNextLine()) {
+                String line = stdinScanner.nextLine();
+                BlockingQueue<String> pr = promptReceiver.get();
+                if (pr != null) {
+                    pr.offer(line);
+                } else {
+                    commandQueue.offer(line);
+                }
+            }
+        });
+        stdinThread.setDaemon(true);
+        stdinThread.start();
+
         try {
             System.out.println("=== P2P Secure File Sharing ===\n");
 
             System.out.print("Enter your peer name: ");
-            String peerName = scanner.nextLine().trim();
+            String peerName = commandQueue.take().trim();
             if (peerName.isEmpty()) peerName = "java-peer";
 
             System.out.print("Enter storage passphrase: ");
-            String passphrase = scanner.nextLine().trim();
+            String passphrase = commandQueue.take().trim();
             if (passphrase.isEmpty()) {
                 System.err.println("[!] Passphrase cannot be empty.");
                 return;
@@ -59,7 +102,7 @@ public class App {
             fileManager = new FileManager(dataDir.resolve("shared"), identity.getPublicKeyBase64());
             fileListCache = new FileListCache(dataDir.resolve("cache"));
             encryptedStore = new EncryptedFileStore(dataDir.resolve("store"), passphrase);
-            consentManager = new ConsentManager(scanner);
+            consentManager = new ConsentManager((InputProvider) this);
 
             tcpServer = new TcpServer(0);
             int port = tcpServer.getPort();
@@ -100,30 +143,40 @@ public class App {
 
         while (true) {
             System.out.print("> ");
-            String line = scanner.nextLine().trim();
+            System.out.flush();
+            String line;
+            try {
+                line = commandQueue.take().trim();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
             if (line.isEmpty()) continue;
 
-            String[] parts = line.split("\\s+", 3);
-            String cmd = parts[0].toLowerCase();
+            String[] cmdRest = line.split("\\s+", 2);
+            String cmd = cmdRest[0].toLowerCase();
+            String rest = cmdRest.length > 1 ? cmdRest[1].trim() : "";
 
             try {
                 switch (cmd) {
                     case "peers" -> listPeers();
                     case "connect" -> {
-                        if (parts.length < 2) { System.out.println("Usage: connect <name>"); break; }
-                        connectToPeer(parts[1]);
+                        if (rest.isEmpty()) { System.out.println("Usage: connect <name>"); break; }
+                        connectToPeer(rest);
                     }
                     case "list" -> {
-                        if (parts.length < 2) { System.out.println("Usage: list <name>"); break; }
-                        requestFileList(parts[1]);
+                        if (rest.isEmpty()) { System.out.println("Usage: list <name>"); break; }
+                        requestFileList(rest);
                     }
                     case "request" -> {
-                        if (parts.length < 3) { System.out.println("Usage: request <name> <filename>"); break; }
-                        requestFile(parts[1], parts[2]);
+                        int lastSpace = rest.lastIndexOf(' ');
+                        if (lastSpace < 0) { System.out.println("Usage: request <name> <filename>"); break; }
+                        requestFile(rest.substring(0, lastSpace).trim(), rest.substring(lastSpace + 1).trim());
                     }
                     case "send" -> {
-                        if (parts.length < 3) { System.out.println("Usage: send <name> <filepath>"); break; }
-                        sendFile(parts[1], parts[2]);
+                        int lastSpace = rest.lastIndexOf(' ');
+                        if (lastSpace < 0) { System.out.println("Usage: send <name> <filepath>"); break; }
+                        sendFile(rest.substring(0, lastSpace).trim(), rest.substring(lastSpace + 1).trim());
                     }
                     case "migrate" -> migrateKey();
                     case "contacts" -> showContacts();
@@ -158,7 +211,7 @@ public class App {
             return;
         }
         Socket sock = TcpClient.connect(peerInfo.host(), peerInfo.port());
-        PeerSession session = new PeerSession(sock, identity, trustStore, scanner);
+        PeerSession session = new PeerSession(sock, identity, trustStore, this);
         session.handshakeAsInitiator();
         activeSessions.put(name, session);
         System.out.println("[+] Connected and authenticated with '" + name + "'");
@@ -363,6 +416,10 @@ public class App {
     private void sendFile(String name, String filePath) throws IOException {
         PeerSession session = getSession(name);
         Path path = Path.of(filePath);
+        // If not found as given, try relative to the shared directory
+        if (!Files.exists(path) || !Files.isRegularFile(path)) {
+            path = fileManager.getSharedDir().resolve(filePath);
+        }
         if (!Files.exists(path) || !Files.isRegularFile(path)) {
             System.out.println("[!] File not found: " + filePath);
             return;
@@ -409,13 +466,13 @@ public class App {
 
     private void handleIncomingConnection(Socket socket) {
         try {
-            PeerSession session = new PeerSession(socket, identity, trustStore, scanner);
+            PeerSession session = new PeerSession(socket, identity, trustStore, this);
             session.handshakeAsResponder();
             String remoteName = session.getRemotePeerName();
-            activeSessions.put(remoteName, session);
-            System.out.println("\n[+] Incoming connection authenticated: '" + remoteName + "'");
+            System.out.println("\n[+] Incoming connection from '" + remoteName + "' — ready to receive.");
 
-            // Handle messages from this peer
+            // Handle messages from this peer (incoming sessions are NOT in activeSessions;
+            // use 'connect <name>' to open an outgoing session for sending commands)
             handlePeerMessages(session, remoteName);
         } catch (IOException e) {
             System.err.println("[!] Incoming connection failed: " + e.getMessage());

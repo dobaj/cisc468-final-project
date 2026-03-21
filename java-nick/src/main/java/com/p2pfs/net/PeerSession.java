@@ -6,6 +6,8 @@ import com.p2pfs.protocol.MessageType;
 import com.p2pfs.protocol.ProtocolConstants;
 import com.p2pfs.trust.TrustStore;
 
+import com.p2pfs.InputProvider;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.Socket;
@@ -13,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.Scanner;
 
 /**
  * An authenticated, encrypted session with a remote peer.
@@ -25,19 +26,19 @@ public class PeerSession implements Closeable {
     private final MessageFramer framer;
     private final Identity localIdentity;
     private final TrustStore trustStore;
-    private final Scanner userInput;
+    private final InputProvider input;
 
     private SessionCipher cipher;
     private String remoteIdentityPubBase64;
     private String remotePeerName;
     private boolean authenticated = false;
 
-    public PeerSession(Socket socket, Identity localIdentity, TrustStore trustStore, Scanner userInput) throws IOException {
+    public PeerSession(Socket socket, Identity localIdentity, TrustStore trustStore, InputProvider input) throws IOException {
         this.socket = socket;
         this.framer = new MessageFramer(socket);
         this.localIdentity = localIdentity;
         this.trustStore = trustStore;
-        this.userInput = userInput;
+        this.input = input;
     }
 
     public boolean isAuthenticated() {
@@ -239,13 +240,14 @@ public class PeerSession implements Closeable {
         System.out.println("\n[!] Unknown peer with fingerprint:");
         System.out.println("    " + fp);
         System.out.print("Trust this peer? Enter a name to trust, or 'n' to reject: ");
-        String input = userInput.nextLine().trim();
-        if (input.isEmpty() || input.equalsIgnoreCase("n")) {
+        System.out.flush();
+        String response = input.readLine().trim();
+        if (response.isEmpty() || response.equalsIgnoreCase("n")) {
             return false;
         }
         try {
-            trustStore.addContact(input, identityPubBase64);
-            System.out.println("[+] Trusted '" + input + "'");
+            trustStore.addContact(response, identityPubBase64);
+            System.out.println("[+] Trusted '" + response + "'");
             return true;
         } catch (IOException e) {
             System.err.println("Failed to save trust store: " + e.getMessage());

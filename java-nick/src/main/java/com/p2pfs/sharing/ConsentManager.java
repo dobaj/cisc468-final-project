@@ -1,16 +1,16 @@
 package com.p2pfs.sharing;
 
-import java.util.Scanner;
+import com.p2pfs.InputProvider;
 
 /**
  * Handles user consent for file operations via CLI prompts.
  */
 public class ConsentManager {
 
-    private final Scanner scanner;
+    private final InputProvider input;
 
-    public ConsentManager(Scanner scanner) {
-        this.scanner = scanner;
+    public ConsentManager(InputProvider input) {
+        this.input = input;
     }
 
     /**
@@ -33,8 +33,9 @@ public class ConsentManager {
     }
 
     private boolean readYesNo() {
-        String input = scanner.nextLine().trim().toLowerCase();
-        return input.equals("y") || input.equals("yes");
+        System.out.flush();
+        String line = input.readLine().trim().toLowerCase();
+        return line.equals("y") || line.equals("yes");
     }
 
     private static String truncateHash(String hash) {

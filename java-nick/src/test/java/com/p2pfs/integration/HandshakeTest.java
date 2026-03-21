@@ -1,5 +1,6 @@
 package com.p2pfs.integration;
 
+import com.p2pfs.InputProvider;
 import com.p2pfs.crypto.Identity;
 import com.p2pfs.net.PeerSession;
 import com.p2pfs.net.TcpServer;
@@ -8,12 +9,12 @@ import com.p2pfs.trust.TrustStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Path;
-import java.util.Scanner;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -39,8 +40,9 @@ class HandshakeTest {
         aliceTrust.addContact("bob", bob.getPublicKeyBase64());
         bobTrust.addContact("alice", alice.getPublicKeyBase64());
 
-        // Scanner that auto-answers (should not be needed since keys are pre-trusted)
-        Scanner noInput = new Scanner(new ByteArrayInputStream(new byte[0]));
+        // Queue that auto-answers (not needed since keys are pre-trusted, but required as param)
+        BlockingQueue<String> q = new LinkedBlockingQueue<>();
+        InputProvider noInput = () -> { try { return q.take(); } catch (InterruptedException e) { return "n"; } };
 
         TcpServer server = new TcpServer(0);
         int port = server.getPort();
@@ -94,9 +96,9 @@ class HandshakeTest {
         // Alice does NOT trust Bob, Bob trusts Alice
         bobTrust.addContact("alice", alice.getPublicKeyBase64());
 
-        // Scanner returns 'n' to reject the unknown peer
-        Scanner rejectInput = new Scanner(new ByteArrayInputStream("n\n".getBytes()));
-        Scanner noInput = new Scanner(new ByteArrayInputStream(new byte[0]));
+        // InputProvider returns 'n' to reject
+        InputProvider rejectInput = () -> "n";
+        InputProvider noInput = () -> { try { Thread.sleep(60000); } catch (InterruptedException e) {} return "n"; };
 
         TcpServer server = new TcpServer(0);
         int port = server.getPort();
