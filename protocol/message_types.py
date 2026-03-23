@@ -1,0 +1,12 @@
+KEY_EXCHANGE = "key_exchange"
+HELLO = "hello"
+DATA = "data"
+
+FILE_LIST_REQUEST = "file_list_request"
+FILE_LIST_RESPONSE = "file_list_response"
+FILE_REQUEST = "file_request"
+FILE_OFFER = "file_offer"
+FILE_OFFER_RESPONSE = "file_offer_response"
+FILE_CHUNK = "file_chunk"
+KEY_MIGRATION = "key_migration"
+ERROR = "error"
