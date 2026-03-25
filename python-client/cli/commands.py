@@ -1,3 +1,6 @@
+import base64
+
+from cli.console import get_console
 from net.peer_registry import active_peers
 from net.tcp_client import connect_to_peer
 from protocol.messages import (
@@ -12,10 +15,16 @@ from utils.text import clean_text
 
 
 def command_loop(identity, mdns, trust_store, file_cache):
+    console = get_console()
     file_manager = FileManager(f"data/{identity.name}/shared")
 
     while True:
-        cmd = clean_text(input("> "))
+        if console is not None:
+            cmd = clean_text(console.read_command())
+        else:
+            cmd = clean_text(input("> "))
+        if not cmd:
+            continue
 
         if cmd == "peers":
             if not mdns.peers:
@@ -38,7 +47,10 @@ def command_loop(identity, mdns, trust_store, file_cache):
             if not connection:
                 print("Not connected to that peer")
                 continue
-            connection.send_secure(file_list_request())
+            if connection.protocol == "java":
+                connection.send_secure({"type": "FILE_LIST_REQUEST"})
+            else:
+                connection.send_secure(file_list_request())
             continue
 
         if cmd.startswith("request "):
@@ -53,7 +65,33 @@ def command_loop(identity, mdns, trust_store, file_cache):
             if not connection:
                 print("Not connected to that peer")
                 continue
-            connection.send_secure(file_request(filename))
+            if connection.protocol == "java":
+                _, record = file_cache.find_record(filename)
+                if record is None or record.get("owner") != peer:
+                    records = file_cache.get(peer)
+                    record = next(
+                        (item for item in records if item.get("filename") == filename),
+                        None,
+                    )
+                if record is None:
+                    print("Run 'list <peer>' first so Python knows the Java file hash")
+                    continue
+                connection.pending_downloads[record["sha256"]] = {
+                    "filename": filename,
+                    "expected_hash": record["sha256"],
+                    "origin_pub": record.get("owner_pub"),
+                    "chunks": {},
+                    "total_chunks": None,
+                }
+                connection.send_secure(
+                    {
+                        "type": "FILE_REQUEST",
+                        "name": filename,
+                        "hash": record["sha256"],
+                    }
+                )
+            else:
+                connection.send_secure(file_request(filename))
             continue
 
         if cmd.startswith("send "):
@@ -74,7 +112,18 @@ def command_loop(identity, mdns, trust_store, file_cache):
                 print("File not found")
                 continue
             connection.pending_offers[record["filename"]] = filepath
-            connection.send_secure(file_offer(record["filename"], record))
+            if connection.protocol == "java":
+                connection.pending_offers_by_hash[record["sha256"]] = filepath
+                connection.send_secure(
+                    {
+                        "type": "FILE_OFFER",
+                        "name": record["filename"],
+                        "size": record["size"],
+                        "hash": record["sha256"],
+                    }
+                )
+            else:
+                connection.send_secure(file_offer(record["filename"], record))
             continue
 
         if cmd == "contacts":
@@ -93,13 +142,29 @@ def command_loop(identity, mdns, trust_store, file_cache):
                 identity.public_key_hex(),
             )
             for connection in list(active_peers.values()):
-                connection.send_secure(
-                    key_migration(
-                        migration_message["new_pub"],
-                        migration_message["old_sig"],
-                        migration_message["new_sig"],
+                if connection.protocol == "java":
+                    connection.send_secure(
+                        {
+                            "type": "KEY_MIGRATION",
+                            "new_identity_pub": base64.b64encode(
+                                bytes.fromhex(migration_message["new_pub"])
+                            ).decode("ascii"),
+                            "signature_old": base64.b64encode(
+                                bytes.fromhex(migration_message["old_sig"])
+                            ).decode("ascii"),
+                            "signature_new": base64.b64encode(
+                                bytes.fromhex(migration_message["new_sig"])
+                            ).decode("ascii"),
+                        }
                     )
-                )
+                else:
+                    connection.send_secure(
+                        key_migration(
+                            migration_message["new_pub"],
+                            migration_message["old_sig"],
+                            migration_message["new_sig"],
+                        )
+                    )
             print("Rotated identity key and notified connected peers")
             continue
 

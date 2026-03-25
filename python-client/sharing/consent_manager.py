@@ -1,5 +1,7 @@
 import os
 
+from cli.console import get_console
+
 
 class ConsentManager:
     def request_consent(self, peer_name: str, action: str, filename: str = "") -> bool:
@@ -17,8 +19,12 @@ class ConsentManager:
         else:
             prompt = f"{peer_name} wants to {action}. Allow? (y/n): "
 
+        console = get_console()
         while True:
-            response = input(prompt).strip().lower()
+            if console is not None:
+                response = console.request_confirmation(prompt).strip().lower()
+            else:
+                response = input(prompt).strip().lower()
             if response in ("y", "yes"):
                 return True
             if response in ("n", "no"):

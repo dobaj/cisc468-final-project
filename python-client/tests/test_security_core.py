@@ -77,6 +77,28 @@ class SecurityCoreTests(unittest.TestCase):
             self.assertEqual(cached_data, b"hello peer")
             self.assertEqual(cached_record["owner"], "Alice")
 
+    def test_relayed_file_list_preserves_original_owner_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            owner = Identity("Alice", "pw", base_dir=temp_dir).load_or_create()
+            relay = Identity("Carol", "pw", base_dir=temp_dir).load_or_create()
+            owner_dir = Path(temp_dir, "shared_owner")
+            relay_dir = Path(temp_dir, "relay_cache")
+
+            owner_manager = FileManager(str(owner_dir))
+            relay_manager = FileManager(str(relay_dir))
+
+            owner_manager.save_file("notes.txt", b"hello peer")
+            data, original_record = owner_manager.get_shared_file("notes.txt", owner)
+            relay_manager.save_verified_file("notes.txt", data, original_record)
+
+            listed_records = relay_manager.list_file_records(relay)
+
+            self.assertEqual(len(listed_records), 1)
+            self.assertEqual(listed_records[0], original_record)
+            self.assertEqual(listed_records[0]["owner"], "Alice")
+            self.assertEqual(listed_records[0]["owner_pub"], owner.public_key_hex())
+            self.assertNotEqual(listed_records[0]["owner_pub"], relay.public_key_hex())
+
     def test_signed_file_record_detects_tampering(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             owner = Identity("Alice", "pw", base_dir=temp_dir).load_or_create()

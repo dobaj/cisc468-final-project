@@ -34,6 +34,18 @@ class FileManager:
     def build_file_record(self, filename: str, identity) -> dict:
         return self.build_record_for_bytes(filename, self.read_file(filename), identity)
 
+    def get_file_record(self, filename: str, identity) -> dict:
+        metadata = self.load_metadata(filename)
+        if metadata is not None:
+            return metadata
+        return self.build_file_record(filename, identity)
+
+    def list_file_records(self, identity) -> list[dict]:
+        records = []
+        for filename in self.list_files():
+            records.append(self.get_file_record(filename, identity))
+        return records
+
     def build_record_for_path(self, filepath: str, identity) -> tuple[bytes, dict]:
         path = Path(filepath)
         data = path.read_bytes()
@@ -54,10 +66,7 @@ class FileManager:
 
     def get_shared_file(self, filename: str, identity) -> tuple[bytes, dict]:
         data = self.read_file(filename)
-        metadata = self.load_metadata(filename)
-        if metadata is None:
-            metadata = self.build_file_record(filename, identity)
-        return data, metadata
+        return data, self.get_file_record(filename, identity)
 
     def load_metadata(self, filename: str):
         metadata_path = self._metadata_path(filename)

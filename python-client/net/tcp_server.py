@@ -18,8 +18,6 @@ def start_server(identity, port, trust_store, file_cache):
     while True:
         conn, addr = server.accept()
 
-        print("Incoming connection...")
-
         threading.Thread(
             target=handle_peer,
             args=(conn, identity, trust_store, file_cache, True, active_peers),

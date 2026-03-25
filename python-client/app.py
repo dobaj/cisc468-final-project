@@ -1,6 +1,7 @@
 import argparse
 import threading
 
+from cli.console import init_console
 from cli.commands import command_loop
 from crypto.identity import Identity
 from discovery.mdns_service import init_mdns
@@ -30,6 +31,7 @@ def main():
     identity = Identity(name, password).load_or_create()
     trust_store = TrustStore(f"data/{name}/truststore.json")
     file_cache = FileListCache()
+    init_console()
 
     mdns = init_mdns(name, port)
 
