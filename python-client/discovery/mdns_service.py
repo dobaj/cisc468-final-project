@@ -14,6 +14,12 @@ def get_local_ip():
     return ip
 
 
+def _decode_mdns_value(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
 class MdnsService:
     def __init__(self, name: str, port: int):
         self.zeroconf = Zeroconf()
@@ -24,6 +30,7 @@ class MdnsService:
         self.service_name = f"{name}.{self.type}"
 
         self.peers = {}
+        self.peer_details = {}
 
     def register(self):
         local_ip = get_local_ip()
@@ -55,17 +62,35 @@ class MdnsService:
         if info and info.addresses:
             ip = socket.inet_ntoa(info.addresses[0])
             port = info.port
+            props = {
+                _decode_mdns_value(key): _decode_mdns_value(value)
+                for key, value in info.properties.items()
+            }
+            protocol_hint = (
+                "java" if props.get("fingerprint") or props.get("version") else "python"
+            )
 
             # Only print if new peer
             if peer_name not in self.peers:
                 print(f"Discovered {peer_name} ({ip}:{port})")
 
             self.peers[peer_name] = (ip, port)
+            self.peer_details[peer_name] = {
+                "host": ip,
+                "port": port,
+                "properties": props,
+                "protocol_hint": protocol_hint,
+            }
 
     def resolve_peer(self, peer_name: str):
         if peer_name not in self.peers:
             raise Exception(f"Peer '{peer_name}' not found")
         return self.peers[peer_name]
+
+    def resolve_peer_info(self, peer_name: str):
+        if peer_name not in self.peer_details:
+            raise Exception(f"Peer '{peer_name}' not found")
+        return self.peer_details[peer_name]
 
 
 mdns_service_instance = None

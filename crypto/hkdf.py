@@ -1,11 +1,18 @@
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import hashes
+from typing import Optional
 
-def derive_key(shared_secret: bytes) -> bytes:
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+
+def derive_key(
+    shared_secret: bytes,
+    salt: Optional[bytes] = None,
+    info: bytes = b"session key",
+) -> bytes:
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=None,
-        info=b"session key"
+        salt=salt,
+        info=info,
     )
     return hkdf.derive(shared_secret)
