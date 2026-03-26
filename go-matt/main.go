@@ -9,8 +9,14 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
+	"strconv"
 	"sync"
+
+	// "strconv"
+	"strings"
+
+	"github.com/dobaj/cisc468-final-project/discovery"
+	"github.com/dobaj/cisc468-final-project/protocol"
 )
 
 // type messageFormat struct {
@@ -151,24 +157,38 @@ func handleConnection(conn net.Conn) {
 }
 
 func main() {
-
-    listener, err := net.Listen("tcp", ":6767")
+    listener, err := net.Listen("tcp4", ":"+fmt.Sprint(protocol.DEFAULT_PORT))
 	
 	if err != nil {
 		// Try random port, maybe the other one was busy
-		listener, err = net.Listen("tcp", ":0")
+		listener, err = net.Listen("tcp4", ":0")
 	}
-
     if err != nil {
         log.Fatal("Error listening:", err)
     }
-
-	log.Printf("%s", listener.Addr())
-	go listen(listener)
-	go sendMessage()
 	
-	wg := &sync.WaitGroup{}
-    wg.Add(1)
-    wg.Wait()
-    
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Enter name: ")
+    name, err := reader.ReadString('\n')
+	if err != nil {
+        log.Fatal("Error parsing name:", err)
+    }
+	name = strings.TrimSpace(name)
+
+
+	addr := strings.SplitAfter(listener.Addr().String(),":")
+	port, err := strconv.Atoi(addr[len(addr)-1])
+	if err != nil {
+        log.Fatal("Error parsing port:", err)
+    }
+	go discovery.Init(name, port)
+	go discovery.Listen()
+
+	var blockSync sync.WaitGroup
+	blockSync.Add(2)
+	go listen(listener)
+	go sendMessage() 
+    blockSync.Wait()
+
+	discovery.Shutdown()
 }
