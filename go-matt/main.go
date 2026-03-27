@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"sync"
 
-	// "strconv"
 	"strings"
 
+	// "github.com/dobaj/cisc468-final-project/crypto"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/protocol"
 )
@@ -156,17 +156,7 @@ func handleConnection(conn net.Conn) {
     }
 }
 
-func main() {
-    listener, err := net.Listen("tcp4", ":"+fmt.Sprint(protocol.DEFAULT_PORT))
-	
-	if err != nil {
-		// Try random port, maybe the other one was busy
-		listener, err = net.Listen("tcp4", ":0")
-	}
-    if err != nil {
-        log.Fatal("Error listening:", err)
-    }
-	
+func login() (name string){
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Enter name: ")
     name, err := reader.ReadString('\n')
@@ -175,12 +165,36 @@ func main() {
     }
 	name = strings.TrimSpace(name)
 
+	return name
+}
+
+func openTCP() (listener net.Listener, port int) {
+	listener, err := net.Listen("tcp4", ":"+fmt.Sprint(protocol.DEFAULT_PORT))
+	
+	if err != nil {
+		// Try random port, maybe the other one was busy
+		listener, err = net.Listen("tcp4", ":0")
+	}
+    if err != nil {
+        log.Fatal("Error listening:", err)
+    }
 
 	addr := strings.SplitAfter(listener.Addr().String(),":")
-	port, err := strconv.Atoi(addr[len(addr)-1])
+	port, err = strconv.Atoi(addr[len(addr)-1])
 	if err != nil {
         log.Fatal("Error parsing port:", err)
     }
+	return listener, port
+}
+
+func main() {
+	// i := identity.Identity{Name: "matt", Password: "pass", Base_dir: "./data/", Priv_key: nil,Pub_key: nil,Identity_dir: "./data/matt", Priv_key_path: ""}
+    // i = *identity.Load_or_create(&i)
+	
+	
+	listener, port := openTCP()
+	name := login()
+	
 	go discovery.Init(name, port)
 	go discovery.Listen()
 
