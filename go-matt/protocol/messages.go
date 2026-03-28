@@ -1,4 +1,11 @@
 package protocol
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"log"
+)
+
 // import json
 
 // from protocol.message_types import (
@@ -15,24 +22,35 @@ package protocol
 //     KEY_MIGRATION,
 // )
 
-
 // def key_exchange(pub_hex: str):
 //     return {
 //         "type": KEY_EXCHANGE,
 //         "pub": pub_hex,
 //     }
 
+// func hello(name string, identity_pub_hex string, fingerprint string) (hello_msg){
 
-func hello(name string, identity_pub_hex string, fingerprint string) (hello_msg){
+//     return hello_msg {
+//         Type: HELLO,
+//         Name: name,
+//         Identity_Pub: identity_pub_hex,
+//         Fingerprint: fingerprint,
+//     }
+// }
 
-    return hello_msg {
-        Type: HELLO,
-        Name: name,
-        Identity_Pub: identity_pub_hex,
-        Fingerprint: fingerprint,
+
+func Key_Exchange(pub []byte) ([]byte) {
+    pub_hex := hex.EncodeToString(pub)
+    key := key_exch_msg{KEY_EXCHANGE, pub_hex}
+
+    msg, err := json.Marshal(key)
+    if err != nil {
+        log.Panicln("Error encoding public key")
+        return []byte{}
     }
+    
+    return msg
 }
-
 
 // def data_message(nonce_hex: str, payload_hex: str):
 //     return {

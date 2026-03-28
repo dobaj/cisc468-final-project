@@ -18,9 +18,14 @@ const FILE_CHUNK = "file_chunk"
 const KEY_MIGRATION = "key_migration"
 const ERROR = "error"
 
-type hello_msg struct {
-    Type string
-	Name string
-	Identity_Pub string
-	Fingerprint string
+// type hello_msg struct {
+//     Type string
+// 	Name string
+// 	Identity_Pub string
+// 	Fingerprint string
+// }
+
+type key_exch_msg struct {
+    Type string `json:"type"`
+	Pub string `json:"pub"`
 }

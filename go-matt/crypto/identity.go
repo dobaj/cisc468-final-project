@@ -1,6 +1,7 @@
-package identity
+package crypto
 
 import (
+	"crypto/rand"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/pem"
@@ -21,13 +22,13 @@ type Identity struct {
 	Priv_key_path string
 }
 
-func Load_or_create(i *Identity) (*Identity) {
+func Load_or_create(i *Identity) (*Identity, error) {
 	// Do some initialization stuff
 	if i.Identity_dir == "" {
-		i.Identity_dir = filepath.Join(i.Base_dir,i.Name)
+		i.Identity_dir = filepath.Join(i.Base_dir,i.Name,"shared")
 	} 
 	if i.Priv_key_path == "" {
-		filepath.Join(i.Identity_dir,"identity.pem")
+		i.Priv_key_path = filepath.Join(i.Identity_dir,"identity.pem")
 	}
 	os.MkdirAll(i.Identity_dir, os.ModePerm)
 
@@ -40,16 +41,16 @@ func Load_or_create(i *Identity) (*Identity) {
 		}
 		// Get priv/pub key back from the block
 		priv_key, err := pkcs8.ParsePKCS8PrivateKey(block.Bytes, []byte(i.Password))
+		if err != nil {
+			log.Println("Error reading priv key. Your password may be wrong.")
+			return nil, errors.New("Wrong pass")
+		}
 		i.Priv_key = priv_key.(ed25519.PrivateKey)
 		i.Pub_key = i.Priv_key.Public().(ed25519.PublicKey)
-		
-		if err != nil {
-			log.Println("Error reading priv key")
-		}
 	} else {
 		// Make new key
 		var err error
-		i.Pub_key, i.Priv_key, err = ed25519.GenerateKey(nil)
+		i.Pub_key, i.Priv_key, err = ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			log.Println("Error generating key", err)
 		}
@@ -64,7 +65,7 @@ func Load_or_create(i *Identity) (*Identity) {
 		}
 		pem.Encode(privFile, &pemBlock)
 	}
-	return i
+	return i, nil
 }
 
 func Sign(i *Identity, data []byte) ([]byte) {

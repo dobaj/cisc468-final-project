@@ -10,8 +10,9 @@ import (
 )
 
 type Peer struct {
-    ip string
-    port int
+    Name string
+	Ip string
+    Port int
 }
 
 var server *zeroconf.Server // So we can shut it down manually later
@@ -19,7 +20,7 @@ var listenContext context.Context
 var cancel context.CancelFunc
 
 var hostName string
-var peers map[string]Peer
+var Peers map[string]Peer
 
 func Init(name string, port int) {
 	var err error
@@ -35,7 +36,7 @@ func Init(name string, port int) {
 }
 
 func Listen() {
-	peers = make(map[string]Peer)
+	Peers = make(map[string]Peer)
 
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
@@ -48,11 +49,11 @@ func Listen() {
 		for entry := range results {
 			// Ignore ourselves and previously discovered people
 			if (entry.Instance != hostName) {
-				_, ok := peers[entry.Instance]
+				_, ok := Peers[entry.Instance]
 				if !ok { 
 					log.Println("Discovered:", entry.Instance, "("+entry.AddrIPv4[0].String()+":"+fmt.Sprint(entry.Port)+")")
 				}
-				peers[entry.Instance] = Peer{entry.AddrIPv4[0].String(), entry.Port}
+				Peers[entry.Instance] = Peer{entry.Instance, entry.AddrIPv4[0].String(), entry.Port}
 			}
 		}
 	}(entries)
@@ -68,6 +69,5 @@ func Listen() {
 func Shutdown() {
 	// Shut down mDNS server and listener
 	server.Shutdown()
-	<-listenContext.Done()
 	cancel()
 }
