@@ -18,6 +18,7 @@ import (
 	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/protocol"
+	"github.com/dobaj/cisc468-final-project/trust"
 )
 
 // type messageFormat struct {
@@ -168,6 +169,9 @@ func main() {
 			break
 		}
 	}
+
+	// Load files
+	trustedStore := trust.NewTrustStore("data/"+name+"/truststore.json")
 	
 	// mDNS
 	go discovery.Init(name, port)
@@ -177,7 +181,7 @@ func main() {
 	// go sendMessage() 
 	var blockSync sync.WaitGroup
 	blockSync.Go(func () {
-		commands.CommandLoop(i)
+		commands.CommandLoop(i, trustedStore)
 	} )
     blockSync.Wait()
 

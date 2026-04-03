@@ -13,9 +13,10 @@ import (
 	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/peers"
+	"github.com/dobaj/cisc468-final-project/trust"
 )
 
-func CommandLoop(identity *crypt.Identity) {
+func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore) {
 	for {
 		reader := bufio.NewReader(os.Stdin)
 		print("> ")
@@ -38,7 +39,7 @@ func CommandLoop(identity *crypt.Identity) {
 			peerName := strings.Split(input, " ")[1]
 			peer := discovery.Peers[peerName]
 			
-			_ = peers.PeerConnect(peer, identity)
+			_ = peers.PeerConnect(peer, identity, trustedStore)
 			continue
 		}
 
