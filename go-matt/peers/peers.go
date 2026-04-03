@@ -1,6 +1,7 @@
 package peers
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,10 @@ import (
 	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/protocol"
+	"github.com/dobaj/cisc468-final-project/trust"
 )
 
-func PeerConnect(peer discovery.Peer, i *crypt.Identity) (error) {
+func PeerConnect(peer discovery.Peer, i *crypt.Identity, trustedStore *trust.TrustStore) (error) {
 	// Resolve and dial address given
 	tcpAddr, err := net.ResolveTCPAddr("tcp", peer.Ip+":"+fmt.Sprint(peer.Port))
 	if err != nil {
@@ -68,6 +70,50 @@ func PeerConnect(peer discovery.Peer, i *crypt.Identity) (error) {
 		return errors.New("Error unpacking response")
 	}
 
-	println(string(bytes), )
+	err = AuthenticatePeer(other_hello, trustedStore)
+	if err != nil {
+		log.Println("Error authenticating peer:", err)
+		return errors.New("Error authenticating peer")
+	}
+
+	return nil
+}
+
+func AuthenticatePeer(msg protocol.Hello_Msg, trustStore *trust.TrustStore) error {
+	peerName := msg.Name
+	fingerprint := msg.Fingerprint
+	identityPub := msg.Identity_Pub
+
+	keyBytes, err := hex.DecodeString(identityPub)
+	if err != nil {
+		return errors.New("Error unpacking response")
+	}
+
+	// Derive fingerprint and verify
+	derivedFingerprint := hex.EncodeToString(crypt.Fingerprint(keyBytes))
+	if derivedFingerprint != fingerprint {
+		return errors.New("Peer fingerprint does not match provided key")
+	}
+
+	// See if this also matches who we believe peer to be
+	expected := trustStore.GetFingerprint(peerName)
+
+	// Trust on first use
+	if expected == "" {
+		if !RequestConsent(peerName, "trust", fingerprint) {
+			return errors.New("untrusted peer rejected by user")
+		}
+
+		// Ok we can trust
+		trustStore.AddContact(peerName, fingerprint)
+		fmt.Printf("Trusted new contact '%s'\n", peerName)
+		return nil
+	}
+
+	// Not a new peer, check they are the same person
+	if expected != fingerprint {
+		return errors.New("fingerprint mismatch")
+	}
+
 	return nil
 }
