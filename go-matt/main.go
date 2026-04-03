@@ -15,7 +15,7 @@ import (
 	// "github.com/dobaj/cisc468-final-project/crypto"
 	"github.com/dobaj/cisc468-final-project/commands"
 	"github.com/dobaj/cisc468-final-project/connect"
-	"github.com/dobaj/cisc468-final-project/crypto"
+	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/protocol"
 )
@@ -156,12 +156,13 @@ func openTCP() (listener net.Listener, port int) {
 func main() {
 	listener, port := openTCP()
 	var name, password string
-	var i *crypto.Identity
+	var i *crypt.Identity
 	for {
 		name, password = login()
 
-		i := &crypto.Identity{Name: name, Password: password, Base_dir: "./data/", Priv_key: nil, Pub_key: nil, Identity_dir: "", Priv_key_path: ""}
-		i, err := crypto.Load_or_create(i)
+		var err error
+		i = &crypt.Identity{Name: name, Password: password, Base_dir: "./data/", Priv_key: nil, Pub_key: nil, Identity_dir: "", Priv_key_path: ""}
+		i, err = crypt.Load_or_create(i)
 		if err == nil {
 			// Success!
 			break

@@ -10,12 +10,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dobaj/cisc468-final-project/crypto"
+	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/peers"
 )
 
-func CommandLoop(identity *crypto.Identity) {
+func CommandLoop(identity *crypt.Identity) {
 	for {
 		reader := bufio.NewReader(os.Stdin)
 		print("> ")

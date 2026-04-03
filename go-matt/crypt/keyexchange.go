@@ -1,8 +1,10 @@
-package crypto
+package crypt
 
 import (
 	"crypto/ecdh"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"log"
 )
@@ -42,4 +44,18 @@ func CompSecret (k *Key, peerPublicKey []byte) ([]byte, error){
     }
 
     return sharedSecret, nil
+}
+
+func DeriveKey (secret []byte) ([]byte) {
+	hash := sha256.New
+	keyLen := 32
+
+	info := "session key"
+
+	// Generate key
+    key, err := hkdf.Key(hash, secret, nil, info, keyLen)
+    if err != nil {
+        log.Fatal("Error deriving shared key:", err)
+    }
+    return key
 }

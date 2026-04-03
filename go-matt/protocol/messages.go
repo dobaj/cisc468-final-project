@@ -41,14 +41,28 @@ import (
 
 func Key_Exchange(pub []byte) ([]byte) {
     pub_hex := hex.EncodeToString(pub)
-    key := key_exch_msg{KEY_EXCHANGE, pub_hex}
+    key := Key_Exch_Msg{KEY_EXCHANGE, pub_hex}
 
     msg, err := json.Marshal(key)
     if err != nil {
         log.Panicln("Error encoding public key")
         return []byte{}
     }
-    
+
+    return msg
+}
+
+func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
+    pub_hex := hex.EncodeToString([]byte(identity_pub))
+    fingerprint_hex := hex.EncodeToString([]byte(fingerprint))
+    key := Hello_Msg{HELLO, name, pub_hex, fingerprint_hex}
+
+    msg, err := json.Marshal(key)
+    if err != nil {
+        log.Panicln("Error encoding public key")
+        return []byte{}
+    }
+
     return msg
 }
 

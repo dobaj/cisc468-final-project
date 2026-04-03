@@ -1,14 +1,15 @@
-package crypto
+package crypt
 
 import (
-	"crypto/rand"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/pem"
 	"errors"
 	"log"
 	"os"
 	"path/filepath"
+
 	"github.com/youmark/pkcs8"
 )
 
@@ -53,6 +54,7 @@ func Load_or_create(i *Identity) (*Identity, error) {
 		i.Pub_key, i.Priv_key, err = ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			log.Println("Error generating key", err)
+			return nil, errors.New("Error generating key")
 		}
 		// Insert into pem format
 		block, err := pkcs8.ConvertPrivateKeyToPKCS8(i.Priv_key, []byte(i.Password))
@@ -61,7 +63,8 @@ func Load_or_create(i *Identity) (*Identity, error) {
 		
 		privFile, err := os.Create(i.Priv_key_path)
 		if err != nil {
-			panic(err)
+			log.Println("Error writing to file", err)
+			return nil, errors.New("Error writing to file")
 		}
 		pem.Encode(privFile, &pemBlock)
 	}
@@ -80,8 +83,9 @@ func Verify(i *Identity, signature []byte, data []byte) (error) {
 	}
 }
 
-func Fingerprint(i *Identity) ([32]byte) {
-	return sha256.Sum256(i.Pub_key)
+func Fingerprint(pub_key []byte) ([]byte) {
+	sum := sha256.Sum256(pub_key)
+	return sum[:]
 }
 
 // import hashlib
