@@ -22,11 +22,7 @@ def main():
     name = clean_text(args.name) if args.name else clean_text(input("Enter name: "))
     password = clean_text(args.password) if args.password else clean_text(input("Enter passphrase: "))
     default_port = DEFAULT_PORTS_BY_NAME.get(name, DEFAULT_PORT)
-    if args.port is not None:
-        port = args.port
-    else:
-        port_text = clean_text(input(f"Enter port [{default_port}]: "))
-        port = int(port_text) if port_text else default_port
+    port = args.port if args.port is not None else default_port
 
     identity = Identity(name, password).load_or_create()
     trust_store = TrustStore(f"data/{name}/truststore.json")

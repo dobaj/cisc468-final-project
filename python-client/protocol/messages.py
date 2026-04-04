@@ -10,6 +10,7 @@ from protocol.message_types import (
     FILE_OFFER_RESPONSE,
     FILE_REQUEST,
     HELLO,
+    KEY_CONFIRM,
     KEY_EXCHANGE,
     KEY_MIGRATION,
 )
@@ -22,13 +23,21 @@ def key_exchange(pub_hex: str):
     }
 
 
-def hello(name: str, identity_pub_hex: str, fingerprint: str):
-    return {
+def hello(
+    name: str,
+    identity_pub_hex: str,
+    fingerprint: str,
+    signature_hex: str = "",
+):
+    message = {
         "type": HELLO,
         "name": name,
         "identity_pub": identity_pub_hex,
         "fingerprint": fingerprint,
     }
+    if signature_hex:
+        message["signature"] = signature_hex
+    return message
 
 
 def data_message(nonce_hex: str, payload_hex: str):
@@ -36,6 +45,15 @@ def data_message(nonce_hex: str, payload_hex: str):
         "type": DATA,
         "nonce": nonce_hex,
         "payload": payload_hex,
+    }
+
+
+def key_confirm(echoed_identity_pub_hex: str, signer_identity_pub_hex: str, signature_hex: str):
+    return {
+        "type": KEY_CONFIRM,
+        "echoed_identity_pub": echoed_identity_pub_hex,
+        "signer_identity_pub": signer_identity_pub_hex,
+        "signature": signature_hex,
     }
 
 

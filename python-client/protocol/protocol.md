@@ -38,12 +38,15 @@ Each peer sends:
   "type": "hello",
   "name": "Alice1",
   "identity_pub": "<hex-encoded Ed25519 public key>",
-  "fingerprint": "<sha256(identity_pub)>"
+  "fingerprint": "<sha256(identity_pub)>",
+  "signature": "<hex-encoded Ed25519 signature over hello metadata and both X25519 public keys>"
 }
 ```
 
 Rules:
 
+- The `hello.signature` must verify against the advertised `identity_pub`
+- The signed payload must bind the peer identity to the current X25519 exchange
 - If a contact already exists in the trust store, the fingerprint must match
 - If the fingerprint is new, the user must confirm it out-of-band before trusting the peer
 - A fingerprint mismatch must abort the connection

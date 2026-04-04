@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from crypto.identity import Identity
 from crypto.key_exchange import KeyExchange
 from crypto.session_cipher import SessionCipher
+from net.peer_session import _handshake_python
 from sharing.file_manager import FileManager
 from storage.encrypted_store import EncryptedStore
 from trust.key_migration import create_migration_message, verify_migration
@@ -133,6 +135,46 @@ class SecurityCoreTests(unittest.TestCase):
         )
 
         self.assertTrue(verified)
+
+    def test_python_handshake_signs_and_verifies_hello_transcript(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            alice = Identity("Alice", "pw", base_dir=temp_dir).load_or_create()
+            bob = Identity("Bob", "pw", base_dir=temp_dir).load_or_create()
+
+            alice_store = TrustStore(str(Path(temp_dir, "alice-trust.json")))
+            bob_store = TrustStore(str(Path(temp_dir, "bob-trust.json")))
+            alice_store.add_contact("Bob", bob.fingerprint(), identity_pub=bob.public_key_hex())
+            bob_store.add_contact("Alice", alice.fingerprint(), identity_pub=alice.public_key_hex())
+
+            left, right = __import__("socket").socketpair()
+            results = {}
+
+            def run_handshake(label, sock, identity, store):
+                try:
+                    results[label] = _handshake_python(sock, identity, store)
+                finally:
+                    sock.close()
+
+            alice_thread = threading.Thread(
+                target=run_handshake,
+                args=("alice", left, alice, alice_store),
+            )
+            bob_thread = threading.Thread(
+                target=run_handshake,
+                args=("bob", right, bob, bob_store),
+            )
+
+            alice_thread.start()
+            bob_thread.start()
+            alice_thread.join(timeout=5)
+            bob_thread.join(timeout=5)
+
+            self.assertFalse(alice_thread.is_alive())
+            self.assertFalse(bob_thread.is_alive())
+            self.assertEqual(results["alice"][1], "Bob")
+            self.assertEqual(results["bob"][1], "Alice")
+            self.assertEqual(results["alice"][2], bob.fingerprint())
+            self.assertEqual(results["bob"][2], alice.fingerprint())
 
 
 if __name__ == "__main__":

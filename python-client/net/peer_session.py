@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import math
 import os
 import socket
@@ -8,8 +9,10 @@ from crypto.hkdf import derive_key
 from crypto.identity import Identity
 from crypto.key_exchange import KeyExchange
 from crypto.session_cipher import SessionCipher
+from discovery import mdns_service
 from net.message_framer import receive_message, send_message
 from net.peer_registry import PeerConnection
+from protocol.constants import HKDF_INFO
 from protocol.message_types import (
     DATA,
     ERROR,
@@ -20,16 +23,20 @@ from protocol.message_types import (
     FILE_OFFER_RESPONSE,
     FILE_REQUEST,
     HELLO,
+    KEY_CONFIRM,
     KEY_EXCHANGE,
     KEY_MIGRATION,
 )
 from protocol.messages import (
+    data_message,
+    encode_payload,
     decode_payload,
     error_message,
     file_chunk,
     file_list_response,
     file_offer_response,
     hello,
+    key_confirm,
     key_exchange,
 )
 from sharing.consent_manager import ConsentManager
@@ -176,25 +183,70 @@ def _handshake_incoming(sock, identity, trust_store):
     raise ValueError(f"Unsupported handshake start: {msg_type}")
 
 
+def _peer_name_from_discovery(sock):
+    service = mdns_service.mdns_service_instance
+    if service is None:
+        return None
+
+    try:
+        remote_host = sock.getpeername()[0]
+    except OSError:
+        return None
+
+    matches = [
+        name
+        for name, details in service.peer_details.items()
+        if details.get("host") == remote_host
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _handshake_python(sock, identity, trust_store, first_message=None):
     ke = KeyExchange()
+    local_ephemeral = ke.get_public_bytes()
 
     if first_message is None:
-        send_message(sock, key_exchange(ke.get_public_bytes().hex()))
+        send_message(sock, key_exchange(local_ephemeral.hex()))
         msg = receive_message(sock)
     else:
         msg = first_message
-        send_message(sock, key_exchange(ke.get_public_bytes().hex()))
+        send_message(sock, key_exchange(local_ephemeral.hex()))
 
     if msg["type"] != KEY_EXCHANGE:
         raise ValueError("Expected key_exchange")
 
-    shared_secret = ke.compute_shared_secret(bytes.fromhex(msg["pub"]))
-    cipher = SessionCipher(derive_key(shared_secret))
+    remote_ephemeral = bytes.fromhex(msg["pub"])
+    shared_secret = ke.compute_shared_secret(remote_ephemeral)
+    cipher = SessionCipher(
+        derive_key(
+            shared_secret,
+            salt=_python_session_salt(local_ephemeral, remote_ephemeral),
+            info=HKDF_INFO,
+        )
+    )
+
+    local_identity_pub = identity.public_key_hex()
+    local_fingerprint = identity.fingerprint()
+    local_signature = identity.sign(
+        _python_hello_signature_payload(
+            identity.name,
+            local_identity_pub,
+            local_fingerprint,
+            local_ephemeral,
+            remote_ephemeral,
+        )
+    ).hex()
 
     send_message(
         sock,
-        hello(identity.name, identity.public_key_hex(), identity.fingerprint()),
+        hello(
+            identity.name,
+            local_identity_pub,
+            local_fingerprint,
+            signature_hex=local_signature,
+        ),
     )
 
     msg = receive_message(sock)
@@ -211,8 +263,51 @@ def _handshake_python(sock, identity, trust_store, first_message=None):
         trust_store,
         wire_identity_pub=peer_identity_pub,
     )
+    _verify_python_hello_signature(
+        msg,
+        local_ephemeral=remote_ephemeral,
+        remote_ephemeral=local_ephemeral,
+    )
+    _exchange_python_key_confirmation(sock, cipher, identity, peer_identity_pub)
 
     return "python", peer_name, peer_fingerprint, peer_identity_pub, cipher
+
+
+def _exchange_python_key_confirmation(sock, cipher, identity, peer_identity_pub):
+    confirmation = key_confirm(
+        peer_identity_pub,
+        identity.public_key_hex(),
+        identity.sign(bytes.fromhex(peer_identity_pub)).hex(),
+    )
+    _send_encrypted_python_handshake_message(sock, cipher, confirmation)
+
+    confirmed = _receive_encrypted_python_handshake_message(sock, cipher)
+    if confirmed.get("type") != KEY_CONFIRM:
+        raise ValueError("Expected key confirmation")
+
+    expected_local_pub = identity.public_key_hex()
+    if confirmed.get("echoed_identity_pub") != expected_local_pub:
+        raise ValueError("Peer key confirmation did not echo our public key")
+
+    signer_identity_pub = confirmed.get("signer_identity_pub")
+    if signer_identity_pub != peer_identity_pub:
+        raise ValueError("Peer key confirmation signer does not match handshake identity")
+
+    _verify_signature(
+        bytes.fromhex(signer_identity_pub),
+        bytes.fromhex(confirmed["echoed_identity_pub"]),
+        bytes.fromhex(confirmed["signature"]),
+        "Peer key confirmation signature verification failed",
+    )
+
+
+def _send_encrypted_python_handshake_message(sock, cipher, message):
+    nonce, ciphertext = cipher.encrypt(encode_payload(message))
+    send_message(sock, data_message(nonce.hex(), ciphertext.hex()))
+
+
+def _receive_encrypted_python_handshake_message(sock, cipher):
+    return _decrypt_inner_message(cipher, receive_message(sock))
 
 
 def _handshake_java_initiator(sock, identity, trust_store, expected_peer_name):
@@ -291,6 +386,7 @@ def _handshake_java_responder(sock, identity, trust_store, first_message):
     peer_fingerprint = _fingerprint(remote_public_bytes)
     peer_name = (
         trust_store.find_name_by_fingerprint(peer_fingerprint)
+        or _peer_name_from_discovery(sock)
         or f"peer-{peer_fingerprint[:8]}"
     )
     _authenticate_peer(
@@ -366,6 +462,19 @@ def _authenticate_peer(
         return
 
     if expected != fingerprint:
+        alias_name = trust_store.find_name_by_fingerprint(fingerprint)
+        if alias_name and alias_name != peer_name and alias_name.startswith("peer-"):
+            trust_store.remove_contact(alias_name)
+            trust_store.rotate_contact_key(
+                peer_name,
+                fingerprint,
+                identity_pub=wire_identity_pub or identity_pub,
+            )
+            print(
+                f"Merged trusted alias '{alias_name}' into contact '{peer_name}'"
+            )
+            Identity.public_key_from_bytes(key_bytes)
+            return
         raise ValueError(
             f"Fingerprint mismatch for {peer_name}. Expected {expected}, got {fingerprint}"
         )
@@ -731,6 +840,49 @@ def _verify_signature(public_key_bytes, payload, signature, message):
         Identity.public_key_from_bytes(public_key_bytes).verify(signature, payload)
     except Exception as exc:  # cryptography raises multiple verify exception types
         raise ValueError(message) from exc
+
+
+def _python_session_salt(local_ephemeral: bytes, remote_ephemeral: bytes) -> bytes:
+    ordered = sorted((local_ephemeral, remote_ephemeral))
+    return b"".join(ordered)
+
+
+def _python_hello_signature_payload(
+    name: str,
+    identity_pub_hex: str,
+    fingerprint: str,
+    local_ephemeral: bytes,
+    remote_ephemeral: bytes,
+) -> bytes:
+    payload = {
+        "fingerprint": fingerprint,
+        "identity_pub": identity_pub_hex,
+        "local_ephemeral": local_ephemeral.hex(),
+        "name": name,
+        "remote_ephemeral": remote_ephemeral.hex(),
+        "type": HELLO,
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _verify_python_hello_signature(msg, local_ephemeral: bytes, remote_ephemeral: bytes):
+    signature_hex = msg.get("signature")
+    if not signature_hex:
+        raise ValueError("Expected signed hello")
+
+    payload = _python_hello_signature_payload(
+        msg["name"],
+        msg["identity_pub"],
+        msg["fingerprint"],
+        local_ephemeral,
+        remote_ephemeral,
+    )
+    _verify_signature(
+        bytes.fromhex(msg["identity_pub"]),
+        payload,
+        bytes.fromhex(signature_hex),
+        "Peer hello signature verification failed",
+    )
 
 
 def _fingerprint(public_key_bytes: bytes) -> str:

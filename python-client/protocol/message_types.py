@@ -1,6 +1,7 @@
 KEY_EXCHANGE = "key_exchange"
 HELLO = "hello"
 DATA = "data"
+KEY_CONFIRM = "key_confirm"
 
 FILE_LIST_REQUEST = "file_list_request"
 FILE_LIST_RESPONSE = "file_list_response"

@@ -14,6 +14,11 @@ from trust.key_migration import create_migration_message
 from utils.text import clean_text
 
 
+def _format_fingerprint_groups(fingerprint: str) -> str:
+    upper = fingerprint.upper()
+    return " ".join(upper[index:index + 4] for index in range(0, len(upper), 4))
+
+
 def command_loop(identity, mdns, trust_store, file_cache):
     console = get_console()
     file_manager = FileManager(f"data/{identity.name}/shared")
@@ -135,12 +140,14 @@ def command_loop(identity, mdns, trust_store, file_cache):
             continue
 
         if cmd == "migrate":
+            print("Generating new identity key ...")
             old_private_key, new_private_key = identity.rotate_key()
             migration_message = create_migration_message(
                 old_private_key,
                 new_private_key,
                 identity.public_key_hex(),
             )
+            notified_peers = 0
             for connection in list(active_peers.values()):
                 if connection.protocol == "java":
                     connection.send_secure(
@@ -165,7 +172,9 @@ def command_loop(identity, mdns, trust_store, file_cache):
                             migration_message["new_sig"],
                         )
                     )
-            print("Rotated identity key and notified connected peers")
+                notified_peers += 1
+            print(f"[+] New fingerprint: {_format_fingerprint_groups(identity.fingerprint())}")
+            print(f"[+] Key migration complete. Notified {notified_peers} peer(s).")
             continue
 
         if cmd == "cache":
