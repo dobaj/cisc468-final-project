@@ -7,32 +7,24 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 
 	"github.com/dobaj/cisc468-final-project/connect"
 	"github.com/dobaj/cisc468-final-project/crypt"
-	"github.com/dobaj/cisc468-final-project/discovery"
 	"github.com/dobaj/cisc468-final-project/protocol"
+	"github.com/dobaj/cisc468-final-project/sharing"
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
-func PeerConnect(peer discovery.Peer, i *crypt.Identity, trustedStore *trust.TrustStore) (error) {
-	// Resolve and dial address given
-	tcpAddr, err := net.ResolveTCPAddr("tcp", peer.Ip+":"+fmt.Sprint(peer.Port))
-	if err != nil {
-		log.Println("Error resolving:", err)
-		return errors.New("Error resolving")
-	}
-	conn, err := net.DialTCP("tcp", nil, tcpAddr)
-	if err != nil {
-		log.Println("Error dialing:", err)
-		return errors.New("Error resolving")
-	}
+func PeerConnect(conn net.Conn, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager, incoming bool) error {
+
+	defer conn.Close()
 
 	k := &crypt.Key{}
 	k = crypt.GenerateKey(k)
 
 	connect.WriteMessage(conn, protocol.Key_Exchange(k.Pub_key.Bytes()))
-	
+
 	bytes, err := connect.ReadMessage(conn)
 	if err != nil {
 		log.Println("Error reading message:", err)
@@ -46,14 +38,14 @@ func PeerConnect(peer discovery.Peer, i *crypt.Identity, trustedStore *trust.Tru
 	}
 
 	// Compute shared key
-	// other_key_bytes, err := hex.DecodeString(other_key.Pub)
-	// if err != nil {
-	// 	log.Println("Error unpacking response:", err)
-	// 	return errors.New("Error unpacking response")
-	// }
+	other_key_bytes, err := hex.DecodeString(other_key.Pub)
+	if err != nil {
+		log.Println("Error unpacking response:", err)
+		return errors.New("Error unpacking response")
+	}
 
-	// secret, err := crypto.CompSecret(k, other_key_bytes)	
-	// shared_key := crypto.DeriveKey(secret)
+	secret, err := crypt.CompSecret(k, other_key_bytes)
+	shared_key := crypt.DeriveKey(secret)
 
 	// Send identity
 	connect.WriteMessage(conn, protocol.Hello(i.Name, i.Pub_key, crypt.Fingerprint(i.Pub_key)))
@@ -76,7 +68,73 @@ func PeerConnect(peer discovery.Peer, i *crypt.Identity, trustedStore *trust.Tru
 		return errors.New("Error authenticating peer")
 	}
 
-	return nil
+	// Okay now that they are authenticated let user know
+	if incoming {
+		println("Incoming connection from '" + other_hello.Name + "'")
+	}
+	println("Authenticated with '" + other_hello.Name + "' (" + other_hello.Fingerprint[len(other_hello.Fingerprint)-16:] + ")")
+
+	activePeer := protocol.ActivePeer{
+		Name:        other_hello.Name,
+		Sock:        conn,
+		Cipher:      shared_key,
+		Fingerprint: other_hello.Fingerprint,
+		IdentityPub: other_hello.Identity_Pub}
+
+	oldPeer, ok := activeMap[other_hello.Name]
+	if ok {
+		ClosePeer(oldPeer)
+	}
+
+	activeMap[other_hello.Name] = &activePeer
+
+	for {
+		// Read anything from peer
+		bytes, err := connect.ReadMessage(conn)
+		if err != nil {
+			if strings.Contains(err.Error(), "forcibly closed") {
+				log.Println("Peer forcibly closed connection")
+				return err
+			}
+			// log.Println("Error receiving from peer", err)
+			continue
+		}
+
+		// Just get the type field for now
+		var msg protocol.Msg
+		err = json.Unmarshal(bytes, &msg)
+		if err != nil {
+			log.Println("Error unpacking", err)
+			continue
+		}
+
+		if msg.Type == protocol.DATA {
+			// This is encrypted (to be expected!)
+			var encData protocol.Data_Msg
+			err = json.Unmarshal(bytes, &encData)
+			if err != nil {
+				log.Println("Error unpacking", err)
+				continue
+			}
+			nonce, err := hex.DecodeString(encData.Nonce)
+			if err != nil {
+				log.Println("Error unpacking", err)
+				continue
+			}
+			payload, err := hex.DecodeString(encData.Payload)
+			if err != nil {
+				log.Println("Error unpacking", err)
+				continue
+			}
+
+			data, err := crypt.Decrypt(shared_key, nonce, payload)
+
+			HandleMessage(&activePeer, data, file_manager, i)
+			continue
+		}
+
+		println(string(bytes))
+	}
 }
 
 func AuthenticatePeer(msg protocol.Hello_Msg, trustStore *trust.TrustStore) error {
@@ -116,4 +174,87 @@ func AuthenticatePeer(msg protocol.Hello_Msg, trustStore *trust.TrustStore) erro
 	}
 
 	return nil
+}
+
+func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *sharing.FileManager, identity *crypt.Identity) error {
+	var msg protocol.Msg
+	err := json.Unmarshal(message, &msg)
+	if err != nil {
+		log.Println("Error unpacking", err)
+		return err
+	}
+
+	// Now let's see what kind of message it is
+	if msg.Type == protocol.FILE_LIST_REQUEST {
+		// Make list of records by iterating through each file
+		records := make([]*sharing.FileRecord, 0)
+		files := file_manager.ListFiles()
+		for _, filename := range files {
+			newRecord, err := file_manager.BuildFileRecord(filename, identity)
+			if err != nil {
+				log.Println("Error making record")
+				continue
+			}
+			records = append(records, newRecord)
+		}
+
+		Send(peer, protocol.FileListResponse(records))
+		return nil
+	}
+	if msg.Type == protocol.FILE_LIST_RESPONSE {
+		// Lets unpack and see what we're working with!!
+		var unpack protocol.File_List_Res_Msg
+		err := json.Unmarshal(message, &unpack)
+		if err != nil {
+			log.Println("Error unpacking file list")
+			return err
+		}
+
+		if len(unpack.Files) == 0 {
+			println("No files available!")
+			return nil
+		}
+
+		println("Files shared from " + peer.Name + ":")
+		for _, record := range unpack.Files {
+			println("    " + record.Filename + " (" + record.Sha256[len(record.Sha256)-16:] + ")")
+		}
+		print("> ")
+		return nil
+	}
+	if msg.Type == protocol.FILE_CHUNK {
+		var unpack protocol.File_Chunk_Msg
+		err := json.Unmarshal(message, &unpack)
+		if err != nil {
+			log.Println("Error unpacking file chunk")
+			return err
+		}
+        filename := unpack.Filename
+        data, err := hex.DecodeString(unpack.Data)
+		if err != nil {
+			log.Println("Error unpacking file chunk")
+			return err
+		}
+        record := unpack.Record
+        
+        // file_manager.save_verified_file(filename, data, record)
+        // encrypted_store.save_bytes(filename, data)
+        // print(f"Received and verified '{filename}' from {connection.peer_name}")
+        return nil
+	}
+
+	println(string(message))
+	return nil
+}
+
+func Send(peer *protocol.ActivePeer, bytes []byte) {
+	nonce, ciphertext, err := crypt.Encrypt(peer.Cipher, bytes)
+	if err != nil {
+		log.Fatal("Something went wrong sending message", err)
+	}
+	connect.WriteMessage(peer.Sock, protocol.DataMessage(nonce, ciphertext))
+}
+
+func ClosePeer(peer *protocol.ActivePeer) {
+	peer.Sock.Close()
 }

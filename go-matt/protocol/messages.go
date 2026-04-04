@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+
+	"github.com/dobaj/cisc468-final-project/sharing"
 )
 
 // import json
@@ -38,59 +40,74 @@ import (
 //     }
 // }
 
+func Key_Exchange(pub []byte) []byte {
+	pub_hex := hex.EncodeToString(pub)
+	key := Key_Exch_Msg{KEY_EXCHANGE, pub_hex}
 
-func Key_Exchange(pub []byte) ([]byte) {
-    pub_hex := hex.EncodeToString(pub)
-    key := Key_Exch_Msg{KEY_EXCHANGE, pub_hex}
+	msg, err := json.Marshal(key)
+	if err != nil {
+		log.Panicln("Error encoding public key")
+		return []byte{}
+	}
 
-    msg, err := json.Marshal(key)
-    if err != nil {
-        log.Panicln("Error encoding public key")
-        return []byte{}
-    }
-
-    return msg
+	return msg
 }
 
-func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
-    pub_hex := hex.EncodeToString([]byte(identity_pub))
-    fingerprint_hex := hex.EncodeToString([]byte(fingerprint))
-    key := Hello_Msg{HELLO, name, pub_hex, fingerprint_hex}
+func Hello(name string, identity_pub []byte, fingerprint []byte) []byte {
+	pub_hex := hex.EncodeToString([]byte(identity_pub))
+	fingerprint_hex := hex.EncodeToString([]byte(fingerprint))
+	key := Hello_Msg{HELLO, name, pub_hex, fingerprint_hex}
 
-    msg, err := json.Marshal(key)
-    if err != nil {
-        log.Panicln("Error encoding public key")
-        return []byte{}
-    }
+	msg, err := json.Marshal(key)
+	if err != nil {
+		log.Panicln("Error encoding public key")
+		return []byte{}
+	}
 
-    return msg
+	return msg
 }
 
-// def data_message(nonce_hex: str, payload_hex: str):
-//     return {
-//         "type": DATA,
-//         "nonce": nonce_hex,
-//         "payload": payload_hex,
-//     }
+func DataMessage(nonce []byte, payload []byte) []byte {
+	nonceHex := hex.EncodeToString([]byte(nonce))
+	payloadHex := hex.EncodeToString([]byte(payload))
 
+	msg, err := json.Marshal(Data_Msg{DATA, nonceHex, payloadHex})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
+	return msg
+}
 
-// def file_list_request():
-//     return {"type": FILE_LIST_REQUEST}
+func FileListRequest() []byte {
+	msg, err := json.Marshal(Msg{FILE_LIST_REQUEST})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
 
+	return msg
+}
 
-// def file_list_response(files: list):
-//     return {
-//         "type": FILE_LIST_RESPONSE,
-//         "files": files,
-//     }
+func FileListResponse(records []*sharing.FileRecord) []byte {
+	msg, err := json.Marshal(File_List_Res_Msg{FILE_LIST_RESPONSE, records})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
 
+	return msg
+}
 
-// def file_request(filename: str):
-//     return {
-//         "type": FILE_REQUEST,
-//         "filename": filename,
-//     }
+func FileRequest(filename string) []byte {
+    msg, err := json.Marshal(File_Req_Msg{FILE_REQUEST, filename})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
 
+	return msg
+}
 
 // def file_offer(filename: str, record: dict):
 //     return {
@@ -99,7 +116,6 @@ func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
 //         "record": record,
 //     }
 
-
 // def file_offer_response(filename: str, accepted: bool, message: str = ""):
 //     return {
 //         "type": FILE_OFFER_RESPONSE,
@@ -107,7 +123,6 @@ func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
 //         "accepted": accepted,
 //         "message": message,
 //     }
-
 
 // def file_chunk(filename: str, data_hex: str, record: dict, done: bool = True):
 //     return {
@@ -118,7 +133,6 @@ func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
 //         "done": done,
 //     }
 
-
 // def key_migration(new_pub: str, old_sig: str, new_sig: str):
 //     return {
 //         "type": KEY_MIGRATION,
@@ -127,17 +141,14 @@ func Hello(name string, identity_pub []byte, fingerprint []byte) ([]byte) {
 //         "new_sig": new_sig,
 //     }
 
-
 // def error_message(message: str):
 //     return {
 //         "type": ERROR,
 //         "message": message,
 //     }
 
-
 // def encode_payload(message: dict) -> bytes:
 //     return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
 
 // def decode_payload(payload: bytes) -> dict:
 //     return json.loads(payload.decode("utf-8"))

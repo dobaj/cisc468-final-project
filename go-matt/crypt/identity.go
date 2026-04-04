@@ -75,8 +75,8 @@ func Sign(i *Identity, data []byte) ([]byte) {
 	return ed25519.Sign(i.Priv_key, data)
 }
 
-func Verify(i *Identity, signature []byte, data []byte) (error) {
-	if ed25519.Verify(i.Pub_key, signature, data) == false {
+func Verify(pub_key []byte, signature []byte, data []byte) (error) {
+	if ed25519.Verify(pub_key, signature, data) == false {
 		return errors.New("Verification error")
 	} else {
 		return nil
