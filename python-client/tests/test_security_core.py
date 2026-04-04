@@ -136,7 +136,7 @@ class SecurityCoreTests(unittest.TestCase):
 
         self.assertTrue(verified)
 
-    def test_python_handshake_signs_and_verifies_hello_transcript(self):
+    def test_python_handshake_completes_between_trusted_peers(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             alice = Identity("Alice", "pw", base_dir=temp_dir).load_or_create()
             bob = Identity("Bob", "pw", base_dir=temp_dir).load_or_create()
