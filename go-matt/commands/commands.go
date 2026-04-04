@@ -117,9 +117,10 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 func printHelp() {
 	help := []string{
 		"Usage:",
-		"View list of peers:   peers",
-		"Connect to peer:      connect [peer name]",
-		"View files from peer: list [peer name]",
+		"View list of peers:     peers",
+		"Connect to peer:        connect [peer name]",
+		"View files from peer:   list [peer name]",
+		"Request file from peer: request [peer name] [filename]",
 	}
 	for line := range help {
 		println(help[line])

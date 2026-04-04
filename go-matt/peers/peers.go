@@ -222,6 +222,32 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 		print("> ")
 		return nil
 	}
+	if msg.Type == protocol.FILE_REQUEST {
+		var unpack protocol.File_Req_Msg
+		err := json.Unmarshal(message, &unpack)
+		if err != nil {
+			log.Println("Error unpacking file request")
+			return err
+		}
+        filename := unpack.Filename
+		
+		// Make sure this user approves
+        if !RequestConsent(peer.Name, "request", filename) {
+            Send(peer,protocol.ErrorMessage("File request rejected - "+filename))
+            return nil
+		}
+		data, record, err := file_manager.GetFile(filename, identity)
+		if err != nil {
+			log.Println("Error reading")
+			Send(peer, protocol.ErrorMessage("File not found or otherwise failed - "+filename))
+			return err
+		}
+
+		// Okay now just send
+		Send(peer, protocol.FileChunk(filename, data, record, true))
+		println("Sent '"+filename+"' to "+peer.Name)
+		return nil
+	}
 	if msg.Type == protocol.FILE_CHUNK {
 		var unpack protocol.File_Chunk_Msg
 		err := json.Unmarshal(message, &unpack)
@@ -238,8 +264,9 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
         record := unpack.Record
         
         // file_manager.save_verified_file(filename, data, record)
+		file_manager.VerifyAndSave(record, data)
         // encrypted_store.save_bytes(filename, data)
-        // print(f"Received and verified '{filename}' from {connection.peer_name}")
+        println("Received and verified '"+filename+"' from "+peer.Name)
         return nil
 	}
 

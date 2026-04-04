@@ -63,6 +63,12 @@ type File_Chunk_Msg struct {
 	Filename string              `json:"filename"`
 	Data     string              `json:"data"`
 	Record   *sharing.FileRecord `json:"record"`
+	Done bool `json:"done"`
+}
+
+type Error_Msg struct {
+	Type    string `json:"type"`
+	Message   string `json:"message"`
 }
 
 // Peer stuff

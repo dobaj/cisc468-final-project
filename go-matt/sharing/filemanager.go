@@ -19,20 +19,20 @@ type FileManager struct {
 }
 
 type FileRecord struct {
-	Owner        string    `json:"owner"`
-	OwnerPub     string    `json:"owner_pub"`
-	Filename     string    `json:"filename"`
-	Sha256       string    `json:"sha256"`
-	Size         int       `json:"size"`
-	Signature    string    `json:"signature"`
+	Owner     string `json:"owner"`
+	OwnerPub  string `json:"owner_pub"`
+	Filename  string `json:"filename"`
+	Sha256    string `json:"sha256"`
+	Size      int    `json:"size"`
+	Signature string `json:"signature"`
 }
 
 type PartialFileRecord struct {
 	// Used to make signature
-	Owner        string    `json:"owner"`
-	Filename     string    `json:"filename"`
-	Sha256       string    `json:"sha256"`
-	Size         int       `json:"size"`
+	Filename string `json:"filename"`
+	Owner    string `json:"owner"`
+	Sha256   string `json:"sha256"`
+	Size     int    `json:"size"`
 }
 
 func NewFileManager(directory string) *FileManager {
@@ -89,6 +89,46 @@ func (fm *FileManager) HashFile(filename string) (string, error) {
 	return hex.EncodeToString(fm.HashBytes(data)), nil
 }
 
+func (fm *FileManager) Verify(record *FileRecord, data []byte) bool {
+	expected := hex.EncodeToString(fm.HashBytes(data))
+	if expected != record.Sha256 {
+		log.Println("File hash doesn't match")
+		return false
+	}
+
+	partial := fm.RecordForSignature(record.Owner, record.Filename, record.Sha256, record.Size)
+	pub_key, err := hex.DecodeString(record.OwnerPub)
+	if err != nil {
+		log.Println("Error unpacking public key")
+		return false
+	}
+	signature, err := hex.DecodeString(record.Signature)
+	if err != nil {
+		log.Println("Error unpacking signature")
+		return false
+	}
+
+	err = crypt.Verify(pub_key, signature, partial)
+	if err != nil {
+		log.Println("Verification failed")
+		return false
+	}
+	if len(data) != record.Size {
+		log.Println("Data size does not match")
+		return false
+	}
+
+	return true
+}
+
+func (fm *FileManager) VerifyAndSave(record *FileRecord, data []byte) bool {
+	if fm.Verify(record, data) != false {
+		fm.SaveFile(record.Filename, data)
+		return true
+	}
+	return false
+}
+
 func (fm *FileManager) BuildFileRecord(filename string, identity *crypt.Identity) (*FileRecord, error) {
 	data, err := fm.ReadFile(filename)
 	if err != nil {
@@ -103,22 +143,22 @@ func (fm *FileManager) BuildRecordFromFileBytes(filename string, data []byte, id
 	signature := crypt.Sign(identity, payload)
 
 	record := &FileRecord{
-		Owner:        identity.Name,
-		OwnerPub:    hex.EncodeToString(identity.Pub_key),
-		Filename:     filename,
-		Sha256:       sha256Hash,
-		Size:         len(data),
-		Signature:    hex.EncodeToString(signature),
+		Owner:     identity.Name,
+		OwnerPub:  hex.EncodeToString(identity.Pub_key),
+		Filename:  filename,
+		Sha256:    sha256Hash,
+		Size:      len(data),
+		Signature: hex.EncodeToString(signature),
 	}
 	return record
 }
 
 func (fm *FileManager) RecordForSignature(owner, filename, sha256 string, size int) []byte {
-	payload := map[string]interface{}{
-		"filename": filename,
-		"owner":    owner,
-		"sha256":   sha256,
-		"size":     size,
+	payload := PartialFileRecord{
+		Filename: filename,
+		Owner:    owner,
+		Sha256:   sha256,
+		Size:     size,
 	}
 
 	payloadData, err := json.Marshal(payload)
@@ -127,6 +167,21 @@ func (fm *FileManager) RecordForSignature(owner, filename, sha256 string, size i
 	}
 
 	return payloadData
+}
+
+func (fm *FileManager) GetFile(filename string, identity *crypt.Identity) ([]byte, *FileRecord, error) {
+	data, err := fm.ReadFile(filename)
+	if err != nil {
+		log.Println("Error reading file", err)
+		return nil, nil, err
+	}
+	
+	record, err := fm.BuildFileRecord(filename, identity)
+	if err != nil {
+		log.Println("Error building record", err)
+		return nil, nil, err
+	}
+	return data, record, nil
 }
 
 func (fm *FileManager) HashBytes(data []byte) []byte {

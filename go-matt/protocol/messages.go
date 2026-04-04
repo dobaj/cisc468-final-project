@@ -68,8 +68,8 @@ func Hello(name string, identity_pub []byte, fingerprint []byte) []byte {
 }
 
 func DataMessage(nonce []byte, payload []byte) []byte {
-	nonceHex := hex.EncodeToString([]byte(nonce))
-	payloadHex := hex.EncodeToString([]byte(payload))
+	nonceHex := hex.EncodeToString(nonce)
+	payloadHex := hex.EncodeToString(payload)
 
 	msg, err := json.Marshal(Data_Msg{DATA, nonceHex, payloadHex})
 	if err != nil {
@@ -124,14 +124,23 @@ func FileRequest(filename string) []byte {
 //         "message": message,
 //     }
 
-// def file_chunk(filename: str, data_hex: str, record: dict, done: bool = True):
-//     return {
-//         "type": FILE_CHUNK,
-//         "filename": filename,
-//         "data": data_hex,
-//         "record": record,
-//         "done": done,
-//     }
+func FileChunk(filename string, data []byte, record *sharing.FileRecord, done bool) []byte {
+    dataHex := hex.EncodeToString(data)
+
+    msg, err := json.Marshal(File_Chunk_Msg{
+        Type: FILE_CHUNK,
+        Filename: filename,
+        Data: dataHex,
+        Record: record,
+        Done: done,
+    })
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
+
+	return msg
+}
 
 // def key_migration(new_pub: str, old_sig: str, new_sig: str):
 //     return {
@@ -141,11 +150,15 @@ func FileRequest(filename string) []byte {
 //         "new_sig": new_sig,
 //     }
 
-// def error_message(message: str):
-//     return {
-//         "type": ERROR,
-//         "message": message,
-//     }
+func ErrorMessage(message string) []byte {
+    msg, err := json.Marshal(Error_Msg{ERROR, message})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
+
+	return msg
+}
 
 // def encode_payload(message: dict) -> bytes:
 //     return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
