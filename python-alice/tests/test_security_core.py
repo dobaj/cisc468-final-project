@@ -1,7 +1,13 @@
+import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+
+PYTHON_CLIENT_ROOT = Path(__file__).resolve().parents[1]
+path_str = str(PYTHON_CLIENT_ROOT)
+if path_str not in sys.path:
+    sys.path.insert(0, path_str)
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
