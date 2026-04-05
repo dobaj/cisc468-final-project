@@ -1,10 +1,11 @@
 param()
 
-$base = "C:\Users\alice\PycharmProjects\python-client"
-$python = "$base\venv\Scripts\python.exe"
+$repo = "C:\Users\alice\PycharmProjects\python-client"
+$base = "$repo\python-alice"
+$python = "$repo\venv\Scripts\python.exe"
 $app = "$base\app.py"
-$data = "$base\data"
-$logs = "$base\test-logs"
+$data = "$repo\data"
+$logs = "$repo\test-logs"
 
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 
