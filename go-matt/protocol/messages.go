@@ -4,8 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
-
-	"github.com/dobaj/cisc468-final-project/sharing"
 )
 
 // import json
@@ -89,7 +87,7 @@ func FileListRequest() []byte {
 	return msg
 }
 
-func FileListResponse(records []*sharing.FileRecord) []byte {
+func FileListResponse(records []*FileRecord) []byte {
 	msg, err := json.Marshal(File_List_Res_Msg{FILE_LIST_RESPONSE, records})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
@@ -100,7 +98,7 @@ func FileListResponse(records []*sharing.FileRecord) []byte {
 }
 
 func FileRequest(filename string) []byte {
-    msg, err := json.Marshal(File_Req_Msg{FILE_REQUEST, filename})
+	msg, err := json.Marshal(File_Req_Msg{FILE_REQUEST, filename})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}
@@ -124,16 +122,16 @@ func FileRequest(filename string) []byte {
 //         "message": message,
 //     }
 
-func FileChunk(filename string, data []byte, record *sharing.FileRecord, done bool) []byte {
-    dataHex := hex.EncodeToString(data)
+func FileChunk(filename string, data []byte, record *FileRecord, done bool) []byte {
+	dataHex := hex.EncodeToString(data)
 
-    msg, err := json.Marshal(File_Chunk_Msg{
-        Type: FILE_CHUNK,
-        Filename: filename,
-        Data: dataHex,
-        Record: record,
-        Done: done,
-    })
+	msg, err := json.Marshal(File_Chunk_Msg{
+		Type:     FILE_CHUNK,
+		Filename: filename,
+		Data:     dataHex,
+		Record:   record,
+		Done:     done,
+	})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}
@@ -151,7 +149,7 @@ func FileChunk(filename string, data []byte, record *sharing.FileRecord, done bo
 //     }
 
 func ErrorMessage(message string) []byte {
-    msg, err := json.Marshal(Error_Msg{ERROR, message})
+	msg, err := json.Marshal(Error_Msg{ERROR, message})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}

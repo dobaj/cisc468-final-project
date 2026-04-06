@@ -188,7 +188,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 	// Now let's see what kind of message it is
 	if msg.Type == protocol.FILE_LIST_REQUEST {
 		// Make list of records by iterating through each file
-		records := make([]*sharing.FileRecord, 0)
+		records := make([]*protocol.FileRecord, 0)
 		files := file_manager.ListFiles()
 		for _, filename := range files {
 			newRecord, err := file_manager.BuildFileRecord(filename, identity)
@@ -218,7 +218,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 
 		println("Files shared from " + peer.Name + ":")
 		for _, record := range unpack.Files {
-			println("    " + record.Filename + " (" + record.Sha256[len(record.Sha256)-16:] + ")")
+			println("    " + record.Filename + " - " + record.Owner + " - (" + record.Sha256[len(record.Sha256)-16:] + ")")
 		}
 		print("> ")
 		return nil
@@ -269,7 +269,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 			log.Println("Error saving file")
 			return err
 		}
-		encfile, err := storeStore.SaveFile(filename, data)
+		encfile, err := storeStore.SaveFile(filename, record, data)
 		if err != nil {
 			log.Println("Error saving file in encrypted store")
 			return err

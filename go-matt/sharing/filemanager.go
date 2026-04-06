@@ -13,28 +13,12 @@ import (
 	"strings"
 
 	"github.com/dobaj/cisc468-final-project/crypt"
+	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/dobaj/cisc468-final-project/storage"
 )
 
 type FileManager struct {
 	dir string
-}
-
-type FileRecord struct {
-	Owner     string `json:"owner"`
-	OwnerPub  string `json:"owner_pub"`
-	Filename  string `json:"filename"`
-	Sha256    string `json:"sha256"`
-	Size      int    `json:"size"`
-	Signature string `json:"signature"`
-}
-
-type PartialFileRecord struct {
-	// Used to make signature
-	Filename string `json:"filename"`
-	Owner    string `json:"owner"`
-	Sha256   string `json:"sha256"`
-	Size     int    `json:"size"`
 }
 
 func NewFileManager(directory string) *FileManager {
@@ -78,7 +62,7 @@ func (fm *FileManager) ReadFile(filename string) ([]byte, error) {
 	return os.ReadFile(filePath)
 }
 
-func (fm *FileManager) SaveFile(filename string, data []byte) (string, error) {
+func (fm *FileManager) WriteFile(filename string, data []byte) (string, error) {
 	// First make sure we aren't overwriting a file
 	ext := filepath.Ext(filename)
 	name := filename[:len(filename)-len(ext)]
@@ -92,7 +76,7 @@ func (fm *FileManager) SaveFile(filename string, data []byte) (string, error) {
 			break
 		} else {
 			// File exists, create a new filename and test it
-			newName = fmt.Sprintf("%s (%d)%s", name, counter, ext)
+			newName = fmt.Sprintf("%s(%d)%s", name, counter, ext)
 			filePath = fm.GetFilePath(newName)
 			counter++
 		}
@@ -113,14 +97,14 @@ func (fm *FileManager) HashFile(filename string) (string, error) {
 	return hex.EncodeToString(fm.HashBytes(data)), nil
 }
 
-func (fm *FileManager) Verify(record *FileRecord, data []byte) bool {
+func (fm *FileManager) Verify(record *protocol.FileRecord, data []byte) bool {
 	expected := hex.EncodeToString(fm.HashBytes(data))
 	if expected != record.Sha256 {
 		log.Println("File hash doesn't match")
 		return false
 	}
 
-	partial := fm.RecordForSignature(record.Owner, record.Filename, record.Sha256, record.Size)
+	partial := RecordForSignature(record.Owner, record.Filename, record.Sha256, record.Size)
 	pub_key, err := hex.DecodeString(record.OwnerPub)
 	if err != nil {
 		log.Println("Error unpacking public key")
@@ -145,28 +129,44 @@ func (fm *FileManager) Verify(record *FileRecord, data []byte) bool {
 	return true
 }
 
-func (fm *FileManager) VerifyAndSave(record *FileRecord, data []byte) (string, error) {
+func (fm *FileManager) VerifyAndSave(record *protocol.FileRecord, data []byte) (string, error) {
 	if fm.Verify(record, data) != false {
-		file, err := fm.SaveFile(record.Filename, data)
+		file, err := fm.SaveFileWithRecord(record, data)
 		return file, err
 	}
 	return "", errors.New("Failed verification")
 }
 
-func (fm *FileManager) BuildFileRecord(filename string, identity *crypt.Identity) (*FileRecord, error) {
+func (fm *FileManager) BuildFileRecord(filename string, identity *crypt.Identity) (*protocol.FileRecord, error) {
+
 	data, err := fm.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	return fm.BuildRecordFromFileBytes(filename, data, identity), nil
+
+	record := fm.BuildRecordFromFileBytes(filename, data, identity)
+
+	partial, err := fm.ReadMetadata(filename)
+	if err != nil {
+		// No metadata lets just leave
+		return record, nil
+	}
+	if partial.Sha256 == record.Sha256 {
+		// This is the same file (hopefully!)
+		// Use original owner and resign
+		record.Owner = partial.Owner
+		record = fm.SignRecord(record, identity)
+	}
+
+	return record, nil
 }
 
-func (fm *FileManager) BuildRecordFromFileBytes(filename string, data []byte, identity *crypt.Identity) *FileRecord {
+func (fm *FileManager) BuildRecordFromFileBytes(filename string, data []byte, identity *crypt.Identity) *protocol.FileRecord {
 	sha256Hash := hex.EncodeToString(fm.HashBytes(data))
-	payload := fm.RecordForSignature(identity.Name, filename, sha256Hash, len(data))
+	payload := RecordForSignature(identity.Name, filename, sha256Hash, len(data))
 	signature := crypt.Sign(identity, payload)
 
-	record := &FileRecord{
+	record := &protocol.FileRecord{
 		Owner:     identity.Name,
 		OwnerPub:  hex.EncodeToString(identity.Pub_key),
 		Filename:  filename,
@@ -177,8 +177,16 @@ func (fm *FileManager) BuildRecordFromFileBytes(filename string, data []byte, id
 	return record
 }
 
-func (fm *FileManager) RecordForSignature(owner, filename, sha256 string, size int) []byte {
-	payload := PartialFileRecord{
+func (fm *FileManager) SignRecord(record *protocol.FileRecord, identity *crypt.Identity) *protocol.FileRecord {
+	payload := RecordForSignature(record.Owner, record.Filename, record.Sha256, record.Size)
+	signature := crypt.Sign(identity, payload)
+
+	record.Signature = hex.EncodeToString(signature)
+	return record
+}
+
+func RecordForSignature(owner, filename, sha256 string, size int) []byte {
+	payload := protocol.PartialFileRecord{
 		Filename: filename,
 		Owner:    owner,
 		Sha256:   sha256,
@@ -193,13 +201,13 @@ func (fm *FileManager) RecordForSignature(owner, filename, sha256 string, size i
 	return payloadData
 }
 
-func (fm *FileManager) GetFile(filename string, identity *crypt.Identity) ([]byte, *FileRecord, error) {
+func (fm *FileManager) GetFile(filename string, identity *crypt.Identity) ([]byte, *protocol.FileRecord, error) {
 	data, err := fm.ReadFile(filename)
 	if err != nil {
 		log.Println("Error reading file", err)
 		return nil, nil, err
 	}
-	
+
 	record, err := fm.BuildFileRecord(filename, identity)
 	if err != nil {
 		log.Println("Error building record", err)
@@ -213,6 +221,57 @@ func (fm *FileManager) HashBytes(data []byte) []byte {
 	return hash[:]
 }
 
-func (fm *FileManager) MetadataPath(filename string) string {
-	return filepath.Join(fm.dir, fmt.Sprintf("%s.meta.json", filename))
+func (fm *FileManager) SaveFileWithRecord(record *protocol.FileRecord, data []byte) (string, error) {
+	// rebuild a partial record
+	partial := protocol.PartialFileRecord{
+		Filename: record.Filename,
+		Owner:    record.Owner,
+		Sha256:   record.Sha256,
+		Size:     record.Size,
+	}
+	return fm.SaveFile(&partial, data)
+}
+
+func (fm *FileManager) SaveFile(record *protocol.PartialFileRecord, data []byte) (string, error) {
+	// Save the actual file
+	savedName, err := fm.WriteFile(record.Filename, data)
+	if err != nil {
+		return "", err
+	}
+
+	// rebuild a partial record
+	partial := protocol.PartialFileRecord{
+		Filename: savedName,
+		Owner:    record.Owner,
+		Sha256:   record.Sha256,
+		Size:     record.Size,
+	}
+
+	// Save metadata as .meta.json
+	metaPath := fm.GetFilePath(savedName + ".meta.json")
+	metaData, err := json.MarshalIndent(partial, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("Failed to marshal metadata: %w", err)
+	}
+
+	if err := os.WriteFile(metaPath, metaData, 0644); err != nil {
+		return "", fmt.Errorf("Failed to write metadata file: %w", err)
+	}
+
+	return savedName, nil
+}
+
+func (fm *FileManager) ReadMetadata(filename string) (*protocol.PartialFileRecord, error) {
+	metaPath := fm.GetFilePath(filename + ".meta.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var partial protocol.PartialFileRecord
+	if err := json.Unmarshal(data, &partial); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return &partial, nil
 }

@@ -109,12 +109,12 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 			// Resolve and dial address given
 			tcpAddr, err := net.ResolveTCPAddr("tcp", peer.Ip+":"+fmt.Sprint(peer.Port))
 			if err != nil {
-				log.Println("Error resolving:", err)
+				println("peer not found!")
 				continue
 			}
 			conn, err := net.DialTCP("tcp", nil, tcpAddr)
 			if err != nil {
-				log.Println("Error dialing:", err)
+				println("peer not found!")
 				continue
 			}
 
@@ -147,7 +147,19 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 			}
 
 			peerName := parts[1]
-			filename := parts[2]
+			filename := input[strings.Index(input, peerName)+len(peerName)+1:]
+			filename = strings.TrimSpace(filename)
+
+			// Remove quotes if there
+			if (strings.HasPrefix(filename, "\"") && strings.HasSuffix(filename, "\"")) ||
+				(strings.HasPrefix(filename, "'") && strings.HasSuffix(filename, "'")) {
+				unquoted, err := strconv.Unquote(filename)
+				if err != nil {
+					log.Println("Invalid quoted filename")
+					continue
+				}
+				filename = unquoted
+			}
 
 			connection, ok := activeMap[peerName]
 			if !ok {
@@ -209,13 +221,13 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 				filename = unquoted
 			}
 
-			bytes, err := storeStore.GetFile(filename)
+			bytes, partial, err := storeStore.GetFile(filename)
 			if err != nil {
 				log.Println("Something went wrong decrypting file")
 				continue
 			}
 
-			file, err := file_manager.SaveFile(filename, bytes)
+			file, err := file_manager.SaveFile(partial, bytes)
 			if err != nil {
 				log.Println("Something went wrong saving file")
 				continue

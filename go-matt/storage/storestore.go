@@ -12,12 +12,18 @@ import (
 	"path/filepath"
 
 	"github.com/dobaj/cisc468-final-project/crypt"
+	"github.com/dobaj/cisc468-final-project/protocol"
 )
 
 type StoreStore struct {
 	Filepath string
 	Identity *crypt.Identity
-	Files    map[string]string
+	Files    map[string]StoreEntry
+}
+
+type StoreEntry struct {
+	Filename string                      `json:"filename"`
+	Record   *protocol.PartialFileRecord `json:"partial_record"`
 }
 
 func NewStoreStore(identity *crypt.Identity, filepath string) *StoreStore {
@@ -25,16 +31,17 @@ func NewStoreStore(identity *crypt.Identity, filepath string) *StoreStore {
 	tss := &StoreStore{
 		Filepath: filepath,
 		Identity: identity,
-		Files:    make(map[string]string),
+		Files:    make(map[string]StoreEntry),
 	}
 	tss.load()
 	return tss
 }
 
 func (tss *StoreStore) load() {
+
+	tss.Files = make(map[string]StoreEntry)
 	// See if file doesn't exist
 	if _, err := os.Stat(tss.Filepath); os.IsNotExist(err) {
-		tss.Files = make(map[string]string)
 		return
 	}
 
@@ -46,18 +53,12 @@ func (tss *StoreStore) load() {
 		return
 	}
 
-	var bytes map[string]string
+	var bytes map[string]StoreEntry
 	if err := json.Unmarshal(data, &bytes); err != nil {
 		log.Println("Error parsing trust store:", err)
 		return
 	}
-
-	tss.Files = make(map[string]string)
-
-	for peerName, entry := range bytes {
-		// Add entries to trusted
-		tss.Files[peerName] = entry
-	}
+	tss.Files = bytes
 }
 
 func (tss *StoreStore) save() {
@@ -86,9 +87,9 @@ func (tss *StoreStore) save() {
 	}
 }
 
-func (tss *StoreStore) AddFile(filename string, encName string) {
+func (tss *StoreStore) AddFile(filename string, partial *protocol.PartialFileRecord, encName string) {
 	// Add entry and save
-	tss.Files[filename] = encName
+	tss.Files[filename] = StoreEntry{encName, partial}
 	tss.save()
 }
 
@@ -106,10 +107,18 @@ func (tss *StoreStore) GetFilename(filename string) string {
 	if !ok {
 		return ""
 	}
-	return entry
+	return entry.Filename
 }
 
-func (tss *StoreStore) SaveFile(filename string, data []byte) (string, error) {
+func (tss *StoreStore) GetRecord(filename string) *protocol.PartialFileRecord {
+	entry, ok := tss.Files[filename]
+	if !ok {
+		return nil
+	}
+	return entry.Record
+}
+
+func (tss *StoreStore) SaveFile(filename string, record *protocol.FileRecord, data []byte) (string, error) {
 	storageDir, err := getStorageDir(tss.Identity.Identity_dir)
 	if err != nil {
 		return "", err
@@ -159,11 +168,18 @@ func (tss *StoreStore) SaveFile(filename string, data []byte) (string, error) {
 					break
 				}
 				// File exists, create a new filename and test it
-				newName = fmt.Sprintf("%s (%d)%s", name, counter, ext)
+				newName = fmt.Sprintf("%s(%d)%s", name, counter, ext)
 				counter++
 			}
 
-			tss.AddFile(newName, cipherfilename)
+			// Make partial record with info from full record
+			partial := protocol.PartialFileRecord{
+				Filename: record.Filename,
+				Owner:    record.Owner,
+				Sha256:   record.Sha256,
+				Size:     record.Size,
+			}
+			tss.AddFile(newName, &partial, cipherfilename)
 			break
 		}
 	}
@@ -172,21 +188,25 @@ func (tss *StoreStore) SaveFile(filename string, data []byte) (string, error) {
 	return newName, EncryptAndStore(tss.Identity, filePath, salt, data)
 }
 
-func (tss *StoreStore) GetFile(filename string) ([]byte, error) {
+func (tss *StoreStore) GetFile(filename string) ([]byte, *protocol.PartialFileRecord, error) {
 	storageDir, err := getStorageDir(tss.Identity.Identity_dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get file from store store
 	cipherfilename := tss.GetFilename(filename)
 	if cipherfilename == "" {
 		log.Println("File not found!")
-		return nil, err
+		return nil, nil, err
 	}
 
+	partial := tss.GetRecord(filename)
+
 	filepath := filepath.Join(storageDir, cipherfilename)
-	return LoadAndDecrypt(tss.Identity, filepath)
+	data, err := LoadAndDecrypt(tss.Identity, filepath)
+
+	return data, partial, err
 }
 
 func (tss *StoreStore) DeleteFile(filename string) error {
