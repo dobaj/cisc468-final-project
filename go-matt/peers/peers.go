@@ -263,7 +263,6 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 		}
         record := unpack.Record
         
-        // file_manager.save_verified_file(filename, data, record)
 		file_manager.VerifyAndSave(record, data)
         // encrypted_store.save_bytes(filename, data)
         println("Received and verified '"+filename+"' from "+peer.Name)

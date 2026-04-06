@@ -35,8 +35,13 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "connect") {
+			fields:= strings.Fields(input)
+			if len(fields) < 2 {
+				printHelp()
+				continue
+			}
 			// grab peer name
-			peerName := strings.Split(input, " ")[1]
+			peerName := fields[1]
 			peer := discovery.Peers[peerName]
 
 			// Resolve and dial address given
@@ -56,7 +61,13 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "list") {
-			peerName := strings.Split(input, " ")[1]
+			fields:= strings.Fields(input)
+			if len(fields) < 2 {
+				printHelp()
+				continue
+			}
+			// grab peer name
+			peerName := fields[1]
 			peer, ok := activeMap[peerName]
 			if !ok {
 				println("Not connected to that peer")
