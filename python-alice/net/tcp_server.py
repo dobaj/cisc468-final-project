@@ -28,7 +28,7 @@ def start_server(
             if not allow_fallback:
                 raise
             server.bind(("0.0.0.0", 0))
-            selected_port = server.getsockname()[1]
+        selected_port = server.getsockname()[1]
 
         server.listen()
 
