@@ -16,12 +16,72 @@ import (
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
-func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager) {
+type Command struct {
+	Input string
+	Done  chan bool
+}
+
+var CommandChan = make(chan Command)
+var InputChan = make(chan string)
+
+func UserInput() {
+	var pendingRequests *peers.ConsentRequest
+
 	for {
-		reader := bufio.NewReader(os.Stdin)
-		print("> ")
+		select {
+		case input := <- InputChan:
+			if pendingRequests != nil {
+				// We're answering a consent prompt
+				resp := strings.ToLower(input)
+				switch resp {
+					case "y", "yes":
+						pendingRequests.Response <- true
+					case "n", "no":
+						pendingRequests.Response <- false
+					default:
+						fmt.Println("Please enter y/n")
+						continue
+				}
+				// Okay we got answer if we made it here
+				pendingRequests = nil
+				continue
+			}
+
+			// Otherwise normal command
+			cmd := Command{
+				Input: input,
+				Done:  make(chan bool),
+			}
+			CommandChan <- cmd
+
+			// Wait for finish
+			<- cmd.Done
+
+		// Check for incoming request
+		case req := <-peers.ConsentChan:
+			pendingRequests = &req
+			printConsentPrompt(req)
+		}
+	}
+}
+
+func ReadInput() {
+	reader := bufio.NewReader(os.Stdin)
+	for {
 		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
+		InputChan <- strings.TrimSpace(input)
+	}
+}
+
+func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager) {
+	var command Command
+	ok := false
+	for {
+		if ok != false {
+			command.Done <- true
+		}
+		command, ok = <- CommandChan
+		input := command.Input
 
 		if strings.HasPrefix(input, "peers") {
 			if len(discovery.Peers) == 0 {
@@ -35,7 +95,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "connect") {
-			fields:= strings.Fields(input)
+			fields := strings.Fields(input)
 			if len(fields) < 2 {
 				printHelp()
 				continue
@@ -61,7 +121,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "list") {
-			fields:= strings.Fields(input)
+			fields := strings.Fields(input)
 			if len(fields) < 2 {
 				printHelp()
 				continue
@@ -103,7 +163,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 
 		if strings.HasPrefix(input, "contacts") {
 			contacts := trustedStore.ListContacts()
-			
+
 			if len(contacts) == 0 {
 				println("No contacts")
 			} else {
@@ -111,7 +171,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 					fmt.Printf("%s (%s)\n", peerName, fingerprint)
 				}
 			}
-			
+
 			continue
 		}
 
@@ -121,7 +181,6 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		printHelp()
-
 	}
 }
 
@@ -137,4 +196,20 @@ func printHelp() {
 		println(help[line])
 	}
 
+}
+
+func printConsentPrompt(req peers.ConsentRequest) {
+	var prompt string
+	switch req.Action {
+	case "send":
+		prompt = fmt.Sprintf("%s wants to send you '%s'. Allow? (y/n): ", req.PeerName, req.Filename)
+	case "request":
+		prompt = fmt.Sprintf("%s is requesting file '%s'. Allow? (y/n): ", req.PeerName, req.Filename)
+	case "trust":
+		prompt = fmt.Sprintf("Trust peer '%s' with fingerprint %s? (y/n): ", req.PeerName, req.Filename)
+	default:
+		prompt = fmt.Sprintf("%s wants to %s. Allow? (y/n): ", req.PeerName, req.Action)
+	}
+
+	fmt.Print(prompt)
 }

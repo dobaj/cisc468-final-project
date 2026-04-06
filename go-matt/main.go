@@ -107,7 +107,10 @@ func main() {
 	go discovery.Listen()
 
 	go listen(listener, i, trustedStore, activeMap, file_manager)
-	// go sendMessage()
+
+	// Wait for commands to exit before exiting the program
+	go commands.UserInput()
+	go commands.ReadInput()
 	var blockSync sync.WaitGroup
 	blockSync.Go(func() {
 		commands.CommandLoop(i, trustedStore, activeMap, file_manager)
