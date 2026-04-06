@@ -6,7 +6,6 @@ from cli.commands import command_loop
 from crypto.identity import Identity
 from discovery.mdns_service import init_mdns
 from net.tcp_server import start_server
-from protocol.constants import DEFAULT_PORT, DEFAULT_PORTS_BY_NAME
 from sharing.file_cache import FileListCache
 from trust.trust_store import TrustStore
 from utils.text import clean_text
@@ -21,8 +20,7 @@ def main():
 
     name = clean_text(args.name) if args.name else clean_text(input("Enter name: "))
     password = clean_text(args.password) if args.password else clean_text(input("Enter passphrase: "))
-    default_port = DEFAULT_PORTS_BY_NAME.get(name, DEFAULT_PORT)
-    preferred_port = args.port if args.port is not None else default_port
+    preferred_port = args.port if args.port is not None else 0
 
     identity = Identity(name, password).load_or_create()
     trust_store = TrustStore(f"data/{name}/truststore.json")
