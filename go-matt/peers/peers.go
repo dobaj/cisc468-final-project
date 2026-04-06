@@ -13,6 +13,7 @@ import (
 	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/dobaj/cisc468-final-project/sharing"
+	"github.com/dobaj/cisc468-final-project/storage"
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
@@ -263,9 +264,14 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 		}
         record := unpack.Record
         
-		file_manager.VerifyAndSave(record, data)
-        // encrypted_store.save_bytes(filename, data)
+		file, err := file_manager.VerifyAndSave(record, data)
+		if err != nil {
+			log.Println("Error saving file")
+			return err
+		}
+		storage.EncryptAndStore(identity, filename, data)
         println("Received and verified '"+filename+"' from "+peer.Name)
+		println("Saved at '"+file+"' in shared folder")
         return nil
 	}
 

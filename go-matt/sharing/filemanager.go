@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -76,9 +77,31 @@ func (fm *FileManager) ReadFile(filename string) ([]byte, error) {
 	return os.ReadFile(filePath)
 }
 
-func (fm *FileManager) SaveFile(filename string, data []byte) error {
-	filePath := fm.GetFilePath(filename)
-	return os.WriteFile(filePath, data, 0644)
+func (fm *FileManager) SaveFile(filename string, data []byte) (string, error) {
+	// First make sure we aren't overwriting a file
+	ext := filepath.Ext(filename)
+	name := filename[:len(filename)-len(ext)]
+	newName := filename
+	filePath := fm.GetFilePath(newName)
+
+	counter := 1
+	for {
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			// File doesn't exist
+			break
+		} else {
+			// File exists, create a new filename and test it
+			newName = fmt.Sprintf("%s (%d)%s", name, counter, ext)
+			filePath = fm.GetFilePath(newName)
+			counter++
+		}
+	}
+
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", err
+	}
+
+	return newName, nil
 }
 
 func (fm *FileManager) HashFile(filename string) (string, error) {
@@ -121,12 +144,12 @@ func (fm *FileManager) Verify(record *FileRecord, data []byte) bool {
 	return true
 }
 
-func (fm *FileManager) VerifyAndSave(record *FileRecord, data []byte) bool {
+func (fm *FileManager) VerifyAndSave(record *FileRecord, data []byte) (string, error) {
 	if fm.Verify(record, data) != false {
-		fm.SaveFile(record.Filename, data)
-		return true
+		file, err := fm.SaveFile(record.Filename, data)
+		return file, err
 	}
-	return false
+	return "", errors.New("Failed verification")
 }
 
 func (fm *FileManager) BuildFileRecord(filename string, identity *crypt.Identity) (*FileRecord, error) {

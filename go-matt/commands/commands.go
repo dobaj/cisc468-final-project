@@ -13,6 +13,7 @@ import (
 	"github.com/dobaj/cisc468-final-project/peers"
 	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/dobaj/cisc468-final-project/sharing"
+	"github.com/dobaj/cisc468-final-project/storage"
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
@@ -175,6 +176,47 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 			continue
 		}
 
+		if strings.HasPrefix(input, "stored") {
+			files, err := storage.ListFiles(identity)
+			if err != nil {
+				log.Println("Error getting file list")
+			}
+
+			if len(files) == 0 {
+				println("No enc files stored")
+			} else {
+				for _, file := range files {
+					fmt.Printf("%s \n", file)
+				}
+			}
+
+			continue
+		}
+
+		if strings.HasPrefix(input, "decrypt") {
+			parts := strings.Fields(input)
+			if len(parts) < 2 {
+				fmt.Println("Usage: decrypt <filename>")
+				continue
+			}
+
+			bytes, err := storage.LoadAndDecrypt(identity, parts[1])
+			if err != nil {
+				log.Println("Something went wrong decrypting file")
+				continue
+			}
+
+			file, err := file_manager.SaveFile(parts[1], bytes)
+			if err != nil {
+				log.Println("Something went wrong saving file")
+				continue
+			}
+
+			println("Saved '"+parts[1]+"' at '"+file+"' in shared folder")
+
+			continue
+		}
+
 		if input == "exit" {
 			println("Goodbye!")
 			break
@@ -191,6 +233,8 @@ func printHelp() {
 		"Connect to peer:        connect [peer name]",
 		"View files from peer:   list [peer name]",
 		"Request file from peer: request [peer name] [filename]",
+		"View encrypted files:   stored",
+		"Decrypt and save file: decrypt [filename]",
 	}
 	for line := range help {
 		println(help[line])
