@@ -29,17 +29,7 @@ func getStorageDir(baseDir string) (string, error) {
 	return storageDir, err
 }
 
-func EncryptAndStore(i *crypt.Identity, filename string, data []byte) error {
-	storageDir, err := getStorageDir(i.Identity_dir)
-	if err != nil {
-		return err
-	}
-
-	// Generate salt
-	salt := make([]byte, 12)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
+func EncryptAndStore(i *crypt.Identity, filePath string, salt []byte, data []byte) error {
 
 	key := deriveKey(i.Password, salt)
 
@@ -60,14 +50,14 @@ func EncryptAndStore(i *crypt.Identity, filename string, data []byte) error {
 
 	ciphertext := gcm.Seal(nil, nonce, data, nil)
 
-	// [saltLen(4 bytes)][salt][nonce][ciphertext]
-	outPath := filepath.Join(storageDir, filename)
-	f, err := os.Create(outPath)
+	// Okay make the file
+	f, err := os.Create(filePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
+	// writing with this format [saltLen(4 bytes)][salt][nonce][ciphertext]
 	if err := binary.Write(f, binary.BigEndian, uint32(len(salt))); err != nil {
 		return err
 	}
@@ -87,14 +77,8 @@ func EncryptAndStore(i *crypt.Identity, filename string, data []byte) error {
 	return nil
 }
 
-func LoadAndDecrypt(i *crypt.Identity, filename string) ([]byte, error) {
-	storageDir, err := getStorageDir(i.Identity_dir)
-	if err != nil {
-		return nil, err
-	}
-
-	inPath := filepath.Join(storageDir, filename)
-	f, err := os.Open(inPath)
+func LoadAndDecrypt(i *crypt.Identity, filepath string) ([]byte, error) {
+	f, err := os.Open(filepath)
 	if err != nil {
 		log.Println("File not found!")
 		return nil, err
@@ -147,33 +131,10 @@ func LoadAndDecrypt(i *crypt.Identity, filename string) ([]byte, error) {
 	return plaintext, nil
 }
 
-func DeleteFile(i *crypt.Identity, filename string) error {
-	// Delete
-	storageDir, err := getStorageDir(i.Identity_dir)
-	if err != nil {
-		return err
+func FileExists(filepath string) bool {
+	if _, err := os.Stat(filepath); os.IsNotExist(err) {
+		// File doesn't exist
+		return false
 	}
-
-	return os.Remove(filepath.Join(storageDir, filename))
-}
-
-func ListFiles(i *crypt.Identity) ([]string, error) {
-	storageDir, err := getStorageDir(i.Identity_dir)
-	if err != nil {
-		return nil, err
-	}
-
-	entries, err := os.ReadDir(storageDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			files = append(files, e.Name())
-		}
-	}
-
-	return files, nil
+	return true
 }

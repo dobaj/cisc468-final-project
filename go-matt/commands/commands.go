@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/dobaj/cisc468-final-project/crypt"
@@ -30,18 +31,18 @@ func UserInput() {
 
 	for {
 		select {
-		case input := <- InputChan:
+		case input := <-InputChan:
 			if pendingRequests != nil {
 				// We're answering a consent prompt
 				resp := strings.ToLower(input)
 				switch resp {
-					case "y", "yes":
-						pendingRequests.Response <- true
-					case "n", "no":
-						pendingRequests.Response <- false
-					default:
-						fmt.Println("Please enter y/n")
-						continue
+				case "y", "yes":
+					pendingRequests.Response <- true
+				case "n", "no":
+					pendingRequests.Response <- false
+				default:
+					fmt.Println("Please enter y/n")
+					continue
 				}
 				// Okay we got answer if we made it here
 				pendingRequests = nil
@@ -56,7 +57,7 @@ func UserInput() {
 			CommandChan <- cmd
 
 			// Wait for finish
-			<- cmd.Done
+			<-cmd.Done
 
 		// Check for incoming request
 		case req := <-peers.ConsentChan:
@@ -74,14 +75,14 @@ func ReadInput() {
 	}
 }
 
-func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager) {
+func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager, storeStore *storage.StoreStore) {
 	var command Command
 	ok := false
 	for {
 		if ok != false {
 			command.Done <- true
 		}
-		command, ok = <- CommandChan
+		command, ok = <-CommandChan
 		input := command.Input
 
 		if strings.HasPrefix(input, "peers") {
@@ -117,7 +118,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 				continue
 			}
 
-			go peers.PeerConnect(conn, identity, trustedStore, activeMap, file_manager, false)
+			go peers.PeerConnect(conn, identity, trustedStore, activeMap, file_manager, storeStore, false)
 			continue
 		}
 
@@ -177,10 +178,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "stored") {
-			files, err := storage.ListFiles(identity)
-			if err != nil {
-				log.Println("Error getting file list")
-			}
+			files := storeStore.ListFiles()
 
 			if len(files) == 0 {
 				println("No enc files stored")
@@ -194,25 +192,36 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		}
 
 		if strings.HasPrefix(input, "decrypt") {
-			parts := strings.Fields(input)
-			if len(parts) < 2 {
+			filename := strings.TrimSpace(input[len("decrypt"):])
+			if filename == "" {
 				fmt.Println("Usage: decrypt <filename>")
 				continue
 			}
 
-			bytes, err := storage.LoadAndDecrypt(identity, parts[1])
+			// Remove quotes if there
+			if (strings.HasPrefix(filename, "\"") && strings.HasSuffix(filename, "\"")) ||
+				(strings.HasPrefix(filename, "'") && strings.HasSuffix(filename, "'")) {
+				unquoted, err := strconv.Unquote(filename)
+				if err != nil {
+					log.Println("Invalid quoted filename")
+					continue
+				}
+				filename = unquoted
+			}
+
+			bytes, err := storeStore.GetFile(filename)
 			if err != nil {
 				log.Println("Something went wrong decrypting file")
 				continue
 			}
 
-			file, err := file_manager.SaveFile(parts[1], bytes)
+			file, err := file_manager.SaveFile(filename, bytes)
 			if err != nil {
 				log.Println("Something went wrong saving file")
 				continue
 			}
 
-			println("Saved '"+parts[1]+"' at '"+file+"' in shared folder")
+			println("Saved '" + filename + "' at '" + file + "' in shared folder")
 
 			continue
 		}

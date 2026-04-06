@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/dobaj/cisc468-final-project/crypt"
+	"github.com/dobaj/cisc468-final-project/storage"
 )
 
 type FileManager struct {
@@ -86,7 +87,7 @@ func (fm *FileManager) SaveFile(filename string, data []byte) (string, error) {
 
 	counter := 1
 	for {
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if !storage.FileExists(filePath) {
 			// File doesn't exist
 			break
 		} else {
