@@ -40,6 +40,13 @@
             <version>3.6.0</version>
         </dependency>
 
+        <!-- Silence SLF4J warnings from JmDNS -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>2.0.16</version>
+        </dependency>
+
         <!-- JUnit 5 for testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

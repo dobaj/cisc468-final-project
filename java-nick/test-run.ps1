@@ -1,6 +1,6 @@
 param()
 
-$base  = "e:\github\cisc468-final-project\java-nick"
+$base  = "C:\Users\nicho\Documents\Github\cisc468-final-project\java-nick"
 $jar   = "$base\target\p2p-file-sharing-1.0-SNAPSHOT.jar"
 $data  = "$base\data"
 $logs  = "$base\test-logs"
@@ -9,32 +9,17 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 Write-Host "=== P2P Automated Test ===" -ForegroundColor Cyan
 
 # ── Pre-test setup ──────────────────────────────────────────────────────────
-# Ensure shared files exist
+# Start clean so identities are generated fresh (normal first-run flow)
+Remove-Item -Recurse -Force "$data\Nick1" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$data\Nick2" -ErrorAction SilentlyContinue
+
 New-Item -ItemType Directory -Force "$data\Nick1\shared" | Out-Null
 New-Item -ItemType Directory -Force "$data\Nick2\shared" | Out-Null
 Set-Content "$data\Nick1\shared\secret.txt"  "Top secret file from Nick1. If you're reading this on Nick2 it worked!" -Encoding UTF8
 Set-Content "$data\Nick1\shared\hello.txt"   "Hello from Nick1!"  -Encoding UTF8
 Set-Content "$data\Nick2\shared\gift.txt"    "A gift from Nick2!" -Encoding UTF8
 
-# Read identity public keys and pre-populate trust stores so no prompt appears
-$nick1pub = [System.IO.File]::ReadAllBytes("$data\Nick1\identity.pub")
-$nick2pub = [System.IO.File]::ReadAllBytes("$data\Nick2\identity.pub")
-$sha256   = [System.Security.Cryptography.SHA256]::Create()
-$nick1fp  = ($sha256.ComputeHash($nick1pub) | ForEach-Object { $_.ToString("x2") }) -join ""
-$nick2fp  = ($sha256.ComputeHash($nick2pub) | ForEach-Object { $_.ToString("x2") }) -join ""
-$nick1b64 = [Convert]::ToBase64String($nick1pub)
-$nick2b64 = [Convert]::ToBase64String($nick2pub)
-$now      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-
-@"
-[{"name":"Nick2","identity_pub":"$nick2b64","fingerprint":"$nick2fp","trusted_at":"$now"}]
-"@ | Set-Content "$data\Nick1\truststore.json" -Encoding UTF8
-
-@"
-[{"name":"Nick1","identity_pub":"$nick1b64","fingerprint":"$nick1fp","trusted_at":"$now"}]
-"@ | Set-Content "$data\Nick2\truststore.json" -Encoding UTF8
-
-Write-Host "  Setup: shared files and trust stores written." -ForegroundColor Gray
+Write-Host "  Setup: cleaned state, shared files written. Identities will be generated on startup." -ForegroundColor Gray
 
 # ── Process helpers ──────────────────────────────────────────────────────────
 function Start-Peer($peerName) {
@@ -110,16 +95,27 @@ Start-Sleep -Milliseconds 3500
 Send $nick1 "peers"
 Check (Wait-For $nick1 "Nick2" -timeoutSec 8) "Nick1 discovers Nick2" "Nick1 did not discover Nick2"
 
-# ── Mutual Auth: Nick1 -> Nick2 ──────────────────────────────────────────────
-Write-Host "`n[3] Nick1 connects to Nick2 (outgoing session)..." -ForegroundColor Cyan
+# ── Mutual Auth: Nick1 -> Nick2 (with live trust prompts) ────────────────────
+Write-Host "`n[3] Nick1 connects to Nick2 (trust prompts answered inline)..." -ForegroundColor Cyan
 Send $nick1 "connect Nick2"
+# "Trust this peer?" has no trailing newline so the async reader never delivers
+# it. Instead trigger on the fingerprint display line, which IS newline-terminated.
+#
+# Order matters: Nick1 is the TCP initiator, so Nick2 receives Nick1's public key
+# FIRST and hits its trust prompt first. Nick1 cannot receive Nick2's key (and
+# therefore cannot show its own trust prompt) until Nick2 responds. Answer Nick2
+# first so the handshake can continue, then answer Nick1.
+Check (Wait-For $nick2 "Unknown peer with fingerprint" "Nick1" -timeoutSec 12) `
+      "Nick2 trusted Nick1 via prompt" "Nick2 trust prompt not seen"
+Check (Wait-For $nick1 "Unknown peer with fingerprint" "Nick2" -timeoutSec 12) `
+      "Nick1 trusted Nick2 via prompt" "Nick1 trust prompt not seen"
 Check (Wait-For $nick1 "authenticated with 'Nick2'" -timeoutSec 12) `
       "Nick1 authenticated with Nick2" "Nick1 handshake failed"
 Check (Wait-For $nick2 "Incoming connection from 'Nick1'" -timeoutSec 12) `
       "Nick2 accepted Nick1's connection" "Nick2 did not see incoming connection"
 
-# ── Mutual Auth: Nick2 -> Nick1 (bidirectional) ──────────────────────────────
-Write-Host "`n[4] Nick2 connects to Nick1 (outgoing session for bidirectional ops)..." -ForegroundColor Cyan
+# ── Mutual Auth: Nick2 -> Nick1 (already trusted, no prompts) ────────────────
+Write-Host "`n[4] Nick2 connects to Nick1 (already trusted)..." -ForegroundColor Cyan
 Send $nick2 "connect Nick1"
 Check (Wait-For $nick2 "authenticated with 'Nick1'" -timeoutSec 12) `
       "Nick2 authenticated with Nick1" "Nick2 handshake failed"
@@ -135,13 +131,10 @@ Check (Wait-For $nick2 "secret.txt" -timeoutSec 8) `
       "Nick2 sees Nick1's file list (secret.txt)" "Nick2 file list missing secret.txt"
 
 # ── File Send (Nick1 pushes to Nick2, Nick2 consents) ────────────────────────
-# Note: wait for the full line "[?] ... wants to send you ..." (ends with newline)
-# rather than "Accept? [y/n]:" which has no newline and is never delivered to the async reader.
 Write-Host "`n[6] File send with consent: Nick1 -> Nick2..." -ForegroundColor Cyan
 Send $nick1 "send Nick2 secret.txt"
 Check (Wait-For $nick2 "wants to send you" "y" -timeoutSec 12) `
       "Nick2 prompted and accepted" "Nick2 consent prompt not seen"
-# Nick2 is the receiver — it prints "Hash verified". Nick1 is the sender — it prints "sent successfully".
 Check (Wait-For $nick2 "Hash verified" -timeoutSec 12) `
       "Nick2 received file and verified hash" "Nick2 hash check failed or transfer incomplete"
 Check (Wait-For $nick1 "sent successfully" -timeoutSec 12) `

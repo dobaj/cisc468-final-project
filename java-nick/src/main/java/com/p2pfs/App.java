@@ -183,6 +183,7 @@ public class App implements InputProvider {
                     }
                     case "migrate" -> migrateKey();
                     case "contacts" -> showContacts();
+                    case "stored" -> showStoredFiles();
                     case "help" -> printHelp();
                     case "exit", "quit" -> { System.out.println("Goodbye."); return; }
                     default -> System.out.println("Unknown command. Type 'help' for usage.");
@@ -942,6 +943,43 @@ public class App implements InputProvider {
 
     // ── Misc commands ────────────────────────────────────────────────────────
 
+    private void showStoredFiles() {
+        try {
+            var files = encryptedStore.listFiles();
+            if (files.isEmpty()) {
+                System.out.println("No files in encrypted store.");
+                return;
+            }
+            System.out.println("Encrypted store (" + files.size() + " file(s)) — decrypting to verify passphrase...");
+            int ok = 0, fail = 0;
+            for (var meta : files) {
+                try {
+                    var data = encryptedStore.retrieveFile(meta.hash);
+                    if (data.isPresent()) {
+                        System.out.printf("  [OK] %-30s %d bytes  origin: %s  stored: %s%n",
+                                meta.name, data.get().length,
+                                meta.origin != null ? meta.origin.substring(0, Math.min(8, meta.origin.length())) + "..." : "?",
+                                meta.stored_at != null ? meta.stored_at.substring(0, 10) : "?");
+                        ok++;
+                    } else {
+                        System.out.printf("  [MISSING] %s — encrypted file not found on disk%n", meta.name);
+                        fail++;
+                    }
+                } catch (Exception e) {
+                    System.out.printf("  [FAIL] %-30s — decryption failed (wrong passphrase?)%n", meta.name);
+                    fail++;
+                }
+            }
+            if (fail == 0) {
+                System.out.println("[+] Passphrase correct — all " + ok + " file(s) decrypted successfully.");
+            } else {
+                System.out.println("[!] " + fail + " file(s) failed to decrypt — passphrase may be wrong.");
+            }
+        } catch (Exception e) {
+            System.err.println("[!] Could not read encrypted store: " + e.getMessage());
+        }
+    }
+
     private void showContacts() {
         var contacts = trustStore.getAllContacts();
         if (contacts.isEmpty()) {
@@ -963,6 +1001,7 @@ public class App implements InputProvider {
         System.out.println("  send <name> <filepath>   - Send a local file to a peer");
         System.out.println("  migrate                  - Migrate to a new identity key");
         System.out.println("  contacts                 - Show trusted contacts");
+        System.out.println("  stored                   - List encrypted store and verify passphrase");
         System.out.println("  help                     - Show this help");
         System.out.println("  exit                     - Quit");
     }
