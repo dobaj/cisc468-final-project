@@ -75,10 +75,16 @@ func (ts *TrustStore) save() {
 }
 
 func (ts *TrustStore) AddContact(peerName, fingerprint string) {
+	prev := []string{}
+	entry, ok := ts.Trusted[peerName]
+	if ok {
+		// Ok we're updating then
+		prev = append(entry.PreviousFingerprints, entry.Fingerprint)
+	}
 	// Add entry and save
 	ts.Trusted[peerName] = TrustEntry{
 		Fingerprint:          fingerprint,
-		PreviousFingerprints: []string{},
+		PreviousFingerprints: prev,
 	}
 	ts.save()
 }

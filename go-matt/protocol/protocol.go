@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"net"
-	"sync"
 )
 
 const HKDF_INFO = "session key"
@@ -81,6 +80,13 @@ type File_Chunk_Msg struct {
 	Done     bool        `json:"done"`
 }
 
+type Key_Migration_Msg struct {
+	Type   string `json:"type"`
+	NewPub string `json:"new_pub"`
+	OldSig string `json:"old_sig"`
+	NewSig string `json:"new_sig"`
+}
+
 type Error_Msg struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -88,11 +94,9 @@ type Error_Msg struct {
 
 // Peer stuff
 type ActivePeer struct {
-	Name          string
-	Sock          net.Conn
-	Cipher        []byte
-	Fingerprint   string
-	IdentityPub   string
-	PendingOffers map[string]string
-	Lock          sync.Mutex
+	Name        string
+	Sock        net.Conn
+	Cipher      []byte
+	Fingerprint string
+	IdentityPub string
 }

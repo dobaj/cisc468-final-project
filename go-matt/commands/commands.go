@@ -206,7 +206,7 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 		if strings.HasPrefix(input, "decrypt") {
 			filename := strings.TrimSpace(input[len("decrypt"):])
 			if filename == "" {
-				fmt.Println("Usage: decrypt <filename>")
+				println("Usage: decrypt <filename>")
 				continue
 			}
 
@@ -238,6 +238,22 @@ func CommandLoop(identity *crypt.Identity, trustedStore *trust.TrustStore, activ
 			continue
 		}
 
+		if strings.HasPrefix(input, "migrate") {
+			oldPriv, oldPub := identity.Priv_key, identity.Pub_key
+			crypt.RotateKey(identity)
+			oldSig := crypt.SignWithKey(oldPriv, identity.Pub_key)
+			newSig := crypt.Sign(identity, oldPub)
+			msg := protocol.KeyMigration(identity.Pub_key, oldSig, newSig)
+
+			// Send to everyone
+			for _, peer := range activeMap {
+				peers.Send(peer, msg)
+				println("Sent new key to", peer.Name)
+			}
+
+			continue
+		}
+
 		if input == "exit" {
 			println("Goodbye!")
 			break
@@ -255,7 +271,8 @@ func printHelp() {
 		"View files from peer:   list [peer name]",
 		"Request file from peer: request [peer name] [filename]",
 		"View encrypted files:   stored",
-		"Decrypt and save file: decrypt [filename]",
+		"Decrypt and save file:  decrypt [filename]",
+		"Migrate to new keys:    migrate",
 	}
 	for line := range help {
 		println(help[line])

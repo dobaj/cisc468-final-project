@@ -130,7 +130,7 @@ func PeerConnect(conn net.Conn, i *crypt.Identity, trustedStore *trust.TrustStor
 
 			data, err := crypt.Decrypt(shared_key, nonce, payload)
 
-			HandleMessage(&activePeer, data, file_manager, i, storeStore)
+			HandleMessage(&activePeer, data, file_manager, i, storeStore, trustedStore)
 			continue
 		}
 
@@ -171,13 +171,14 @@ func AuthenticatePeer(msg protocol.Hello_Msg, trustStore *trust.TrustStore) erro
 
 	// Not a new peer, check they are the same person
 	if expected != fingerprint {
+		println(expected, fingerprint)
 		return errors.New("fingerprint mismatch")
 	}
 
 	return nil
 }
 
-func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *sharing.FileManager, identity *crypt.Identity, storeStore *storage.StoreStore) error {
+func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *sharing.FileManager, identity *crypt.Identity, storeStore *storage.StoreStore, trustStore *trust.TrustStore) error {
 	var msg protocol.Msg
 	err := json.Unmarshal(message, &msg)
 	if err != nil {
@@ -277,6 +278,47 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 		println("Received and verified '" + filename + "' from " + peer.Name)
 		println("Saved at '" + file + "' in shared folder")
 		println("Saved at '" + encfile + "' in encrypted store")
+		return nil
+	}
+	if msg.Type == protocol.KEY_MIGRATION {
+		var unpack protocol.Key_Migration_Msg
+		err := json.Unmarshal(message, &unpack)
+		if err != nil {
+			log.Println("Error unpacking migration message")
+			return err
+		}
+
+		oldPub, err := hex.DecodeString(peer.IdentityPub)
+		if err != nil {
+			return err
+		}
+		newPub, err := hex.DecodeString(unpack.NewPub)
+		if err != nil {
+			return err
+		}
+		oldSig, err := hex.DecodeString(unpack.OldSig)
+		if err != nil {
+			return err
+		}
+		newSig, err := hex.DecodeString(unpack.NewSig)
+		if err != nil {
+			return err
+		}
+
+		err = crypt.Verify([]byte(oldPub), oldSig, newPub)
+		if err != nil {
+			log.Println("Couldn't verify migration message")
+			return err
+		}
+		err = crypt.Verify([]byte(newPub), newSig, oldPub)
+		if err != nil {
+			log.Println("Couldn't verify migration message")
+			return err
+		}
+
+		newFingerprint := hex.EncodeToString(crypt.Fingerprint(newPub))
+		trustStore.AddContact(peer.Name, newFingerprint)
+		println(peer.Name + " has a new identity fingerprint (" + newFingerprint[len(newFingerprint)-16:] + ")")
 		return nil
 	}
 

@@ -6,38 +6,6 @@ import (
 	"log"
 )
 
-// import json
-
-// from protocol.message_types import (
-//     DATA,
-//     ERROR,
-//     FILE_CHUNK,
-//     FILE_LIST_REQUEST,
-//     FILE_LIST_RESPONSE,
-//     FILE_OFFER,
-//     FILE_OFFER_RESPONSE,
-//     FILE_REQUEST,
-//     HELLO,
-//     KEY_EXCHANGE,
-//     KEY_MIGRATION,
-// )
-
-// def key_exchange(pub_hex: str):
-//     return {
-//         "type": KEY_EXCHANGE,
-//         "pub": pub_hex,
-//     }
-
-// func hello(name string, identity_pub_hex string, fingerprint string) (hello_msg){
-
-//     return hello_msg {
-//         Type: HELLO,
-//         Name: name,
-//         Identity_Pub: identity_pub_hex,
-//         Fingerprint: fingerprint,
-//     }
-// }
-
 func Key_Exchange(pub []byte) []byte {
 	pub_hex := hex.EncodeToString(pub)
 	key := Key_Exch_Msg{KEY_EXCHANGE, pub_hex}
@@ -140,13 +108,19 @@ func FileChunk(filename string, data []byte, record *FileRecord, done bool) []by
 	return msg
 }
 
-// def key_migration(new_pub: str, old_sig: str, new_sig: str):
-//     return {
-//         "type": KEY_MIGRATION,
-//         "new_pub": new_pub,
-//         "old_sig": old_sig,
-//         "new_sig": new_sig,
-//     }
+func KeyMigration(newpub []byte, oldsig []byte, newsig []byte) []byte {
+	newPubHex := hex.EncodeToString(newpub)
+	oldSigHex := hex.EncodeToString(oldsig)
+	newSigHex := hex.EncodeToString(newsig)
+
+	msg, err := json.Marshal(Key_Migration_Msg{KEY_MIGRATION, newPubHex, oldSigHex, newSigHex})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
+
+	return msg
+}
 
 func ErrorMessage(message string) []byte {
 	msg, err := json.Marshal(Error_Msg{ERROR, message})
@@ -157,9 +131,3 @@ func ErrorMessage(message string) []byte {
 
 	return msg
 }
-
-// def encode_payload(message: dict) -> bytes:
-//     return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-// def decode_payload(payload: bytes) -> dict:
-//     return json.loads(payload.decode("utf-8"))
