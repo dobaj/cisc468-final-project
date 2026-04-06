@@ -8,16 +8,19 @@ class ConsoleManager:
         self._prompts = queue.Queue()
         self._input_started = False
         self._print_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._input_thread = None
 
     def start(self):
         if self._input_started:
             return
         self._input_started = True
-        threading.Thread(target=self._input_loop, daemon=True).start()
+        self._input_thread = threading.Thread(target=self._input_loop, daemon=True)
+        self._input_thread.start()
 
     def read_command(self) -> str:
         self._show_prompt("> ")
-        while True:
+        while not self._stop_event.is_set():
             prompt_request = self._next_prompt_request()
             if prompt_request is not None:
                 prompt, response_queue = prompt_request
@@ -30,6 +33,8 @@ class ConsoleManager:
             line = self._try_read_line()
             if line is not None:
                 return line
+
+        return "exit"
 
     def request_confirmation(self, prompt: str) -> str:
         response_queue = queue.Queue(maxsize=1)
@@ -61,12 +66,18 @@ class ConsoleManager:
             return None
 
     def _input_loop(self):
-        while True:
+        while not self._stop_event.is_set():
             try:
                 line = input()
             except EOFError:
                 line = "exit"
             self._lines.put(line)
+            if line == "exit":
+                self._stop_event.set()
+                break
+
+    def shutdown(self):
+        self._stop_event.set()
 
 
 console_manager = None
@@ -82,3 +93,8 @@ def init_console():
 
 def get_console():
     return console_manager
+
+
+def shutdown_console():
+    if console_manager is not None:
+        console_manager.shutdown()
