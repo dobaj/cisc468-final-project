@@ -5,3 +5,10 @@ report/*.fdb_latexmk
 report/*.blg
 report/*.bbl
 report/*.aux
+venv/
+.idea/
+__pycache__/
+*.pyc
+data/
+test-logs/
+fresh-clone/
