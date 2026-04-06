@@ -18,7 +18,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class MdnsService implements Closeable {
 
-    public record PeerInfo(String name, String host, int port, String fingerprint) {}
+    /**
+     * @param clientType "java" for Java peers, "native" for Go/Python peers.
+     *                   Java peers are detected by the "client=java" TXT record.
+     */
+    public record PeerInfo(String name, String host, int port, String fingerprint, String clientType) {
+        public boolean isJavaPeer() { return "java".equals(clientType); }
+    }
 
     private JmDNS jmdns;
     private final Map<String, PeerInfo> discoveredPeers = new ConcurrentHashMap<>();
@@ -43,7 +49,7 @@ public class MdnsService implements Closeable {
                 ProtocolConstants.MDNS_SERVICE_TYPE,
                 peerName,
                 port,
-                "fingerprint=" + fingerprint + "&version=" + ProtocolConstants.VERSION
+                "fingerprint=" + fingerprint + "&version=" + ProtocolConstants.VERSION + "&client=java"
         );
         jmdns.registerService(serviceInfo);
 
@@ -69,11 +75,14 @@ public class MdnsService implements Closeable {
                 if (addrs.length == 0) return;
 
                 String fp = info.getPropertyString("fingerprint");
+                String client = info.getPropertyString("client");
+                String clientType = "java".equals(client) ? "java" : "native";
                 PeerInfo peer = new PeerInfo(
                         event.getName(),
                         addrs[0],
                         info.getPort(),
-                        fp != null ? fp : ""
+                        fp != null ? fp : "",
+                        clientType
                 );
                 discoveredPeers.put(event.getName(), peer);
                 if (listener != null) {

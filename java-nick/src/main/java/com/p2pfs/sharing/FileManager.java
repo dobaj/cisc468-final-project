@@ -62,6 +62,15 @@ public class FileManager {
     }
 
     /**
+     * Returns the path to a file by its filename, if it exists in the shared directory.
+     * Used by the native protocol where requests carry a filename but no hash.
+     */
+    public Optional<Path> getFileByName(String filename) {
+        Path candidate = sharedDir.resolve(filename);
+        return Files.isRegularFile(candidate) ? Optional.of(candidate) : Optional.empty();
+    }
+
+    /**
      * Returns the path to a file with the given hash, if available locally.
      */
     public Optional<Path> getFileByHash(String hash) throws IOException {
