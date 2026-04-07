@@ -11,10 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * Manages local shared files — tracks which files are available,
- * computes their hashes, and builds file list responses.
- */
+// tracks shared files, computes hashes, and builds file list responses
 public class FileManager {
 
     private final Path sharedDir;
@@ -27,14 +24,9 @@ public class FileManager {
         Files.createDirectories(sharedDir);
     }
 
-    /**
-     * Scans the shared directory and returns the file list,
-     * including any files received from other peers.
-     */
     public List<Messages.FileEntry> getFileList() throws IOException {
         List<Messages.FileEntry> entries = new ArrayList<>();
 
-        // Local files
         try (var stream = Files.list(sharedDir)) {
             stream.filter(Files::isRegularFile).forEach(path -> {
                 try {
@@ -48,22 +40,21 @@ public class FileManager {
             });
         }
 
-        // Files received from other peers (origin preserved)
-        entries.addAll(receivedFiles);
+        entries.addAll(receivedFiles); // include files received from peers (origin preserved)
 
         return Collections.unmodifiableList(entries);
     }
 
-    /**
-     * Registers a file received from another peer.
-     */
     public void addReceivedFile(String name, long size, String hash, String originPubBase64) {
         receivedFiles.add(new Messages.FileEntry(name, size, hash, originPubBase64));
     }
 
-    /**
-     * Returns the path to a file with the given hash, if available locally.
-     */
+    // native protocol requests use filename only (no hash upfront)
+    public Optional<Path> getFileByName(String filename) {
+        Path candidate = sharedDir.resolve(filename);
+        return Files.isRegularFile(candidate) ? Optional.of(candidate) : Optional.empty();
+    }
+
     public Optional<Path> getFileByHash(String hash) throws IOException {
         try (var stream = Files.list(sharedDir)) {
             return stream.filter(Files::isRegularFile).filter(p -> {
@@ -76,13 +67,9 @@ public class FileManager {
         }
     }
 
-    /**
-     * Saves received file data to the shared directory.
-     */
     public Path saveFile(String name, byte[] data) throws IOException {
         Path target = sharedDir.resolve(name);
-        // Avoid overwriting — append a number if needed
-        int count = 1;
+        int count = 1; // append _N suffix if a file with this name already exists
         while (Files.exists(target)) {
             String baseName = name.contains(".")
                     ? name.substring(0, name.lastIndexOf('.'))

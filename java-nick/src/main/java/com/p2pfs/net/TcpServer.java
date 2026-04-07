@@ -7,10 +7,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
-/**
- * TCP server that listens for incoming peer connections.
- * Each accepted connection is handed off to a consumer on a separate thread.
- */
+// accepts connections and dispatches each socket to a handler thread
 public class TcpServer implements AutoCloseable {
 
     private final ServerSocket serverSocket;
@@ -30,10 +27,7 @@ public class TcpServer implements AutoCloseable {
         return serverSocket.getLocalPort();
     }
 
-    /**
-     * Starts accepting connections. Each accepted socket is passed to the handler.
-     * This method blocks until the server is closed.
-     */
+    // blocks until closed; each incoming socket is handed off to handler
     public void accept(Consumer<Socket> handler) {
         running = true;
         while (running) {
@@ -48,9 +42,6 @@ public class TcpServer implements AutoCloseable {
         }
     }
 
-    /**
-     * Starts accepting in a background thread.
-     */
     public void acceptAsync(Consumer<Socket> handler) {
         Thread acceptThread = new Thread(() -> accept(handler));
         acceptThread.setDaemon(true);
