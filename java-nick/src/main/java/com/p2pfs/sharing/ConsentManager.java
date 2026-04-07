@@ -39,9 +39,8 @@ public class ConsentManager {
     }
 
     private static String truncateHash(String hash) {
-        if (hash.length() > 16) {
-            return hash.substring(0, 16) + "...";
-        }
+        if (hash == null) return "(no hash)";
+        if (hash.length() > 16) return hash.substring(0, 16) + "...";
         return hash;
     }
 }

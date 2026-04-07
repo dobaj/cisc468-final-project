@@ -178,6 +178,98 @@ public final class Messages {
         public String signature_new;
     }
 
+    // ── Native protocol (Go / Python) ─────────────────────────────────────────
+    // All type strings are lowercase; binary values are hex-encoded (not Base64).
+
+    /** Step 1 of native handshake — sent by both sides (initiator first). */
+    public static class NativeKeyExchange {
+        public final String type = "key_exchange";
+        public String pub; // hex-encoded X25519 public key
+    }
+
+    /** Step 2 of native handshake — identity announcement after DH. */
+    public static class NativeHello {
+        public final String type = "hello";
+        public String name;
+        public String identity_pub; // hex-encoded Ed25519 public key
+        public String fingerprint;  // hex-encoded SHA-256 of identity_pub
+    }
+
+    /** Native session encryption envelope (replaces ENCRYPTED for native sessions). */
+    public static class NativeData {
+        public final String type = "data";
+        public String nonce;   // hex, 12 bytes
+        public String payload; // hex, AES-256-GCM ciphertext+tag
+    }
+
+    /**
+     * File metadata record embedded in native file list and file chunk messages.
+     * All fields use hex encoding; this matches Go's FileRecord struct and Python's record dict.
+     */
+    public static class NativeFileRecord {
+        public String owner;     // peer name
+        public String owner_pub; // hex Ed25519 public key of original sharer
+        public String filename;
+        public String sha256;    // hex SHA-256 of file contents
+        public int    size;
+        public String signature; // hex Ed25519 signature (may be empty from Java)
+    }
+
+    public static class NativeFileListRequest {
+        public final String type = "file_list_request";
+    }
+
+    public static class NativeFileListResponse {
+        public final String type = "file_list_response";
+        public List<NativeFileRecord> files;
+    }
+
+    /** Native file pull request — uses filename only, no hash required upfront. */
+    public static class NativeFileRequest {
+        public final String type = "file_request";
+        public String filename;
+    }
+
+    /** Native file chunk — complete file in one message (Go/Python always set done=true). */
+    public static class NativeFileChunk {
+        public final String type = "file_chunk";
+        public String filename;
+        public String data;            // hex-encoded file bytes
+        public NativeFileRecord record;
+        public boolean done = true;
+    }
+
+    /** Native file push offer (Python supports this; Go does not). */
+    public static class NativeFileOffer {
+        public final String type = "file_offer";
+        public String filename;
+        public NativeFileRecord record;
+    }
+
+    /** Response to a native file offer. */
+    public static class NativeFileOfferResponse {
+        public final String type = "file_offer_response";
+        public String filename;
+        public boolean accepted;
+        public String message = "";
+    }
+
+    /** Native key migration — all fields hex-encoded. */
+    public static class NativeKeyMigration {
+        public final String type = "key_migration";
+        public String new_pub; // hex
+        public String old_sig; // hex
+        public String new_sig; // hex
+    }
+
+    public static class NativeError {
+        public final String type = "error";
+        public String message;
+
+        public NativeError() {}
+        public NativeError(String message) { this.message = message; }
+    }
+
     // ── Error ──────────────────────────────────────────────────────────────────
 
     public static class Error {

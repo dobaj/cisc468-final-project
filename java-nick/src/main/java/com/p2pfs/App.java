@@ -1,5 +1,7 @@
 package com.p2pfs;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.p2pfs.crypto.*;
 import com.p2pfs.discovery.MdnsService;
 import com.p2pfs.net.*;
@@ -29,18 +31,17 @@ public class App implements InputProvider {
     private ConsentManager consentManager;
     private MdnsService mdnsService;
     private TcpServer tcpServer;
+    private String peerName; // local peer's display name (needed for native hello)
+
     // Commands go here (read by the command loop)
     private final BlockingQueue<String> commandQueue = new LinkedBlockingQueue<>();
     // When a consent/trust prompt is active, its dedicated response queue is registered here.
-    // The stdin reader routes input to this queue instead of commandQueue.
     private final AtomicReference<BlockingQueue<String>> promptReceiver = new AtomicReference<>(null);
     private final Map<String, PeerSession> activeSessions = new ConcurrentHashMap<>();
     private Path dataDir;
 
-    /**
-     * Called by consent/trust prompt handlers (on background threads).
-     * Registers a dedicated response queue so the stdin router bypasses the command loop.
-     */
+    private static final HexFormat HEX = HexFormat.of();
+
     @Override
     public String readLine() {
         BlockingQueue<String> q = new LinkedBlockingQueue<>();
@@ -60,9 +61,6 @@ public class App implements InputProvider {
     }
 
     private void run() {
-        // Single daemon thread reads stdin and routes lines:
-        //   - if a prompt handler is waiting: send to its dedicated queue
-        //   - otherwise: send to the command queue
         Scanner stdinScanner = new Scanner(System.in);
         Thread stdinThread = new Thread(() -> {
             while (stdinScanner.hasNextLine()) {
@@ -82,7 +80,7 @@ public class App implements InputProvider {
             System.out.println("=== P2P Secure File Sharing ===\n");
 
             System.out.print("Enter your peer name: ");
-            String peerName = commandQueue.take().trim();
+            peerName = commandQueue.take().trim();
             if (peerName.isEmpty()) peerName = "java-peer";
 
             System.out.print("Enter storage passphrase: ");
@@ -104,7 +102,6 @@ public class App implements InputProvider {
             encryptedStore = new EncryptedFileStore(dataDir.resolve("store"), passphrase);
             consentManager = new ConsentManager((InputProvider) this);
 
-            // Try group-agreed port 6767; fall back to random if already bound (e.g. two instances on same machine)
             try {
                 tcpServer = new TcpServer(ProtocolConstants.DEFAULT_PORT);
             } catch (java.net.BindException e) {
@@ -119,8 +116,9 @@ public class App implements InputProvider {
             mdnsService.setPeerListener(new MdnsService.PeerListener() {
                 @Override
                 public void onPeerDiscovered(MdnsService.PeerInfo peer) {
-                    System.out.printf("[*] Discovered peer: %s at %s:%d (fp: %s)%n",
-                            peer.name(), peer.host(), peer.port(),
+                    String proto = peer.isJavaPeer() ? "java" : "native";
+                    System.out.printf("[*] Discovered peer: %s at %s:%d [%s] (fp: %s)%n",
+                            peer.name(), peer.host(), peer.port(), proto,
                             peer.fingerprint().length() > 16 ? peer.fingerprint().substring(0, 16) + "..." : peer.fingerprint());
                 }
 
@@ -169,6 +167,17 @@ public class App implements InputProvider {
                         if (rest.isEmpty()) { System.out.println("Usage: connect <name>"); break; }
                         connectToPeer(rest);
                     }
+                    // connect_ip <ip> <port> <name>  — bypasses mDNS for direct connections
+                    // Useful when cross-client mDNS discovery is unavailable (e.g. testing).
+                    case "connect_ip" -> {
+                        String[] ipParts = rest.split("\\s+", 3);
+                        if (ipParts.length < 3) {
+                            System.out.println("Usage: connect_ip <ip> <port> <name>"); break;
+                        }
+                        String ip = ipParts[0]; int port = Integer.parseInt(ipParts[1]); String name = ipParts[2];
+                        mdnsService.injectPeer(new com.p2pfs.discovery.MdnsService.PeerInfo(name, ip, port, "", "native"));
+                        connectToPeer(name);
+                    }
                     case "list" -> {
                         if (rest.isEmpty()) { System.out.println("Usage: list <name>"); break; }
                         requestFileList(rest);
@@ -205,7 +214,8 @@ public class App implements InputProvider {
         System.out.println("Discovered peers:");
         for (var entry : peers.entrySet()) {
             var p = entry.getValue();
-            System.out.printf("  %-20s %s:%d%n", p.name(), p.host(), p.port());
+            System.out.printf("  %-20s %s:%d [%s]%n", p.name(), p.host(), p.port(),
+                    p.isJavaPeer() ? "java" : "native");
         }
     }
 
@@ -218,16 +228,32 @@ public class App implements InputProvider {
         }
         Socket sock = TcpClient.connect(peerInfo.host(), peerInfo.port());
         PeerSession session = new PeerSession(sock, identity, trustStore, this);
-        session.handshakeAsInitiator();
+
+        if (peerInfo.isJavaPeer()) {
+            session.handshakeAsInitiator();
+        } else {
+            session.handshakeNativeAsInitiator(peerName);
+        }
+
         activeSessions.put(name, session);
-        System.out.println("[+] Connected and authenticated with '" + name + "'");
+        System.out.println("[+] Connected and authenticated with '" + name + "' [" +
+                (session.isNativeProtocol() ? "native" : "java") + "]");
+
+        // Start a background thread that owns socket reads and routes incoming requests.
+        // Responses to our own commands are delivered via the session's receiveQueue.
+        LinkedBlockingQueue<String> rq = new LinkedBlockingQueue<>();
+        session.setReceiveQueue(rq);
+        String peerNameCopy = name;
+        Thread listener = new Thread(() -> handlePeerMessages(session, peerNameCopy),
+                                     "peer-listener-" + name);
+        listener.setDaemon(true);
+        listener.start();
     }
 
     private PeerSession getSession(String name) throws IOException {
         PeerSession session = activeSessions.get(name);
         if (session == null || session.getSocket().isClosed()) {
             activeSessions.remove(name);
-            // Try to connect automatically
             connectToPeer(name);
             session = activeSessions.get(name);
         }
@@ -237,80 +263,130 @@ public class App implements InputProvider {
         return session;
     }
 
+    // ── File list ────────────────────────────────────────────────────────────
+
     private void requestFileList(String name) throws IOException {
         PeerSession session = getSession(name);
-        session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
-        String responseJson = session.receiveEncrypted();
-        Messages.FileListResponse response = Messages.deserialize(responseJson, Messages.FileListResponse.class);
 
-        System.out.println("Files available from '" + name + "':");
-        if (response.files == null || response.files.isEmpty()) {
-            System.out.println("  (none)");
-        } else {
-            for (Messages.FileEntry f : response.files) {
-                System.out.printf("  %-30s %8d bytes  hash:%s%n", f.name, f.size, truncHash(f.hash));
+        if (session.isNativeProtocol()) {
+            session.sendEncrypted(Messages.serialize(new Messages.NativeFileListRequest()));
+            String responseJson = session.receiveEncrypted();
+            if (!"file_list_response".equals(PeerSession.rawType(responseJson))) {
+                System.out.println("[!] Unexpected response: " + responseJson);
+                return;
             }
-            // Cache the file list
-            fileListCache.cache(session.getRemoteIdentityPubBase64(), name, response.files);
+            Messages.NativeFileListResponse response =
+                    Messages.deserialize(responseJson, Messages.NativeFileListResponse.class);
+
+            System.out.println("Files available from '" + name + "':");
+            if (response.files == null || response.files.isEmpty()) {
+                System.out.println("  (none)");
+            } else {
+                List<Messages.FileEntry> entries = new ArrayList<>();
+                for (Messages.NativeFileRecord r : response.files) {
+                    System.out.printf("  %-30s %8d bytes  hash:%s%n",
+                            r.filename, r.size, truncHash(r.sha256));
+                    entries.add(new Messages.FileEntry(r.filename, r.size, r.sha256,
+                            r.owner_pub != null ? HEX.formatHex(HEX.parseHex(r.owner_pub)) : ""));
+                }
+                fileListCache.cache(session.getRemoteIdentityPubBase64(), name, entries);
+            }
+        } else {
+            session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
+            String responseJson = session.receiveEncrypted();
+            Messages.FileListResponse response =
+                    Messages.deserialize(responseJson, Messages.FileListResponse.class);
+
+            System.out.println("Files available from '" + name + "':");
+            if (response.files == null || response.files.isEmpty()) {
+                System.out.println("  (none)");
+            } else {
+                for (Messages.FileEntry f : response.files) {
+                    System.out.printf("  %-30s %8d bytes  hash:%s%n", f.name, f.size, truncHash(f.hash));
+                }
+                fileListCache.cache(session.getRemoteIdentityPubBase64(), name, response.files);
+            }
         }
     }
+
+    // ── File request (pull) ──────────────────────────────────────────────────
 
     private void requestFile(String name, String fileName) throws IOException {
         PeerSession session;
         try {
             session = getSession(name);
         } catch (IOException e) {
-            // Peer might be offline — try to find file from a third party
             System.out.println("[*] Peer '" + name + "' is offline. Searching cached file lists...");
             requestFileFromThirdParty(name, fileName);
             return;
         }
 
-        Messages.FileRequest req = new Messages.FileRequest();
-        req.name = fileName;
-        // We need the hash — look up from cached file list or ask
-        var cached = fileListCache.load(session.getRemoteIdentityPubBase64());
-        String hash = null;
-        if (cached.isPresent()) {
-            hash = cached.get().files.stream()
-                    .filter(f -> f.name.equals(fileName))
-                    .map(f -> f.hash).findFirst().orElse(null);
-        }
-        if (hash == null) {
-            // Request file list first to get the hash
-            session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
-            String listJson = session.receiveEncrypted();
-            Messages.FileListResponse listResp = Messages.deserialize(listJson, Messages.FileListResponse.class);
-            if (listResp.files != null) {
-                fileListCache.cache(session.getRemoteIdentityPubBase64(), name, listResp.files);
-                hash = listResp.files.stream()
+        if (session.isNativeProtocol()) {
+            // Native protocol: send file_request with filename only; peer responds with file_chunk or error
+            Messages.NativeFileRequest req = new Messages.NativeFileRequest();
+            req.filename = fileName;
+            session.sendEncrypted(Messages.serialize(req));
+
+            String respJson = session.receiveEncrypted();
+            String respType = PeerSession.rawType(respJson);
+            if ("error".equals(respType)) {
+                JsonObject err = JsonParser.parseString(respJson).getAsJsonObject();
+                System.out.println("[!] " + name + " rejected/error: " + err.get("message").getAsString());
+                return;
+            }
+            if (!"file_chunk".equals(respType)) {
+                System.out.println("[!] Unexpected response: " + respJson);
+                return;
+            }
+            receiveNativeFileChunk(session, respJson);
+
+        } else {
+            // Java protocol: need hash upfront, explicit FILE_ACCEPT/DENY
+            Messages.FileRequest req = new Messages.FileRequest();
+            req.name = fileName;
+
+            var cached = fileListCache.load(session.getRemoteIdentityPubBase64());
+            String hash = null;
+            if (cached.isPresent()) {
+                hash = cached.get().files.stream()
                         .filter(f -> f.name.equals(fileName))
                         .map(f -> f.hash).findFirst().orElse(null);
             }
-        }
-        if (hash == null) {
-            System.out.println("[!] File '" + fileName + "' not found in " + name + "'s file list.");
-            return;
-        }
+            if (hash == null) {
+                session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
+                String listJson = session.receiveEncrypted();
+                Messages.FileListResponse listResp =
+                        Messages.deserialize(listJson, Messages.FileListResponse.class);
+                if (listResp.files != null) {
+                    fileListCache.cache(session.getRemoteIdentityPubBase64(), name, listResp.files);
+                    hash = listResp.files.stream()
+                            .filter(f -> f.name.equals(fileName))
+                            .map(f -> f.hash).findFirst().orElse(null);
+                }
+            }
+            if (hash == null) {
+                System.out.println("[!] File '" + fileName + "' not found in " + name + "'s file list.");
+                return;
+            }
 
-        req.hash = hash;
-        session.sendEncrypted(Messages.serialize(req));
+            req.hash = hash;
+            session.sendEncrypted(Messages.serialize(req));
 
-        String respJson = session.receiveEncrypted();
-        if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
-            System.out.println("[!] " + name + " rejected the file request.");
-            return;
-        }
-        if (Messages.typeOf(respJson) != MessageType.FILE_ACCEPT) {
-            System.out.println("[!] Unexpected response: " + respJson);
-            return;
-        }
+            String respJson = session.receiveEncrypted();
+            if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
+                System.out.println("[!] " + name + " rejected the file request.");
+                return;
+            }
+            if (Messages.typeOf(respJson) != MessageType.FILE_ACCEPT) {
+                System.out.println("[!] Unexpected response: " + respJson);
+                return;
+            }
 
-        receiveFileData(session, hash, fileName, session.getRemoteIdentityPubBase64());
+            receiveFileData(session, hash, fileName, session.getRemoteIdentityPubBase64());
+        }
     }
 
     private void requestFileFromThirdParty(String offlinePeerName, String fileName) throws IOException {
-        // Find the offline peer's identity in trust store
         var contact = trustStore.findByName(offlinePeerName);
         if (contact.isEmpty()) {
             System.out.println("[!] No trusted contact named '" + offlinePeerName + "'");
@@ -331,33 +407,45 @@ public class App implements InputProvider {
             return;
         }
 
-        // Search connected peers for someone who has this file
         for (var entry : activeSessions.entrySet()) {
             PeerSession session = entry.getValue();
             if (session.getSocket().isClosed()) continue;
             try {
-                session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
-                String listJson = session.receiveEncrypted();
-                Messages.FileListResponse listResp = Messages.deserialize(listJson, Messages.FileListResponse.class);
-                if (listResp.files == null) continue;
+                // Use the session's own protocol for querying
+                List<Messages.FileEntry> remoteFiles = queryFileList(session, entry.getKey());
+                if (remoteFiles == null) continue;
 
-                boolean hasFile = listResp.files.stream()
-                        .anyMatch(f -> f.hash.equals(hash) && f.origin.equals(originPub));
+                final String finalHash = hash;
+                boolean hasFile = remoteFiles.stream()
+                        .anyMatch(f -> f.hash.equals(finalHash) && originPub.contains(f.origin != null ? f.origin : ""));
+                if (!hasFile) {
+                    // Looser check: just match by hash
+                    hasFile = remoteFiles.stream().anyMatch(f -> f.hash.equals(finalHash));
+                }
                 if (hasFile) {
                     System.out.println("[*] Found file on peer '" + entry.getKey() + "', requesting...");
-                    Messages.FileRequest req = new Messages.FileRequest();
-                    req.hash = hash;
-                    req.name = fileName;
-                    session.sendEncrypted(Messages.serialize(req));
-
-                    String respJson = session.receiveEncrypted();
-                    if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
-                        System.out.println("[!] " + entry.getKey() + " rejected the request.");
-                        continue;
+                    if (session.isNativeProtocol()) {
+                        Messages.NativeFileRequest req = new Messages.NativeFileRequest();
+                        req.filename = fileName;
+                        session.sendEncrypted(Messages.serialize(req));
+                        String respJson = session.receiveEncrypted();
+                        if ("file_chunk".equals(PeerSession.rawType(respJson))) {
+                            receiveNativeFileChunk(session, respJson);
+                            return;
+                        }
+                    } else {
+                        Messages.FileRequest req = new Messages.FileRequest();
+                        req.hash = hash;
+                        req.name = fileName;
+                        session.sendEncrypted(Messages.serialize(req));
+                        String respJson = session.receiveEncrypted();
+                        if (Messages.typeOf(respJson) == MessageType.FILE_DENY) {
+                            System.out.println("[!] " + entry.getKey() + " rejected the request.");
+                            continue;
+                        }
+                        receiveFileData(session, hash, fileName, originPub);
+                        return;
                     }
-
-                    receiveFileData(session, hash, fileName, originPub);
-                    return;
                 }
             } catch (IOException e) {
                 System.err.println("[!] Error querying " + entry.getKey() + ": " + e.getMessage());
@@ -366,13 +454,82 @@ public class App implements InputProvider {
         System.out.println("[!] Could not find '" + fileName + "' on any connected peer.");
     }
 
+    /** Returns a unified file entry list from a peer using whichever protocol that session uses. */
+    private List<Messages.FileEntry> queryFileList(PeerSession session, String peerName) throws IOException {
+        if (session.isNativeProtocol()) {
+            session.sendEncrypted(Messages.serialize(new Messages.NativeFileListRequest()));
+            String listJson = session.receiveEncrypted();
+            if (!"file_list_response".equals(PeerSession.rawType(listJson))) return null;
+            Messages.NativeFileListResponse resp =
+                    Messages.deserialize(listJson, Messages.NativeFileListResponse.class);
+            if (resp.files == null) return List.of();
+            List<Messages.FileEntry> entries = new ArrayList<>();
+            for (Messages.NativeFileRecord r : resp.files) {
+                entries.add(new Messages.FileEntry(r.filename, r.size, r.sha256,
+                        r.owner_pub != null ? r.owner_pub : ""));
+            }
+            fileListCache.cache(session.getRemoteIdentityPubBase64(), peerName, entries);
+            return entries;
+        } else {
+            session.sendEncrypted(Messages.serialize(new Messages.FileListRequest()));
+            String listJson = session.receiveEncrypted();
+            Messages.FileListResponse resp =
+                    Messages.deserialize(listJson, Messages.FileListResponse.class);
+            if (resp.files == null) return List.of();
+            fileListCache.cache(session.getRemoteIdentityPubBase64(), peerName, resp.files);
+            return resp.files;
+        }
+    }
+
+    // ── File receive helpers ─────────────────────────────────────────────────
+
+    /** Handles a native file_chunk message (already received, passed as JSON string). */
+    private void receiveNativeFileChunk(PeerSession session, String chunkJson) throws IOException {
+        Messages.NativeFileChunk chunk = Messages.deserialize(chunkJson, Messages.NativeFileChunk.class);
+        byte[] fileBytes = HEX.parseHex(chunk.data);
+
+        String expectedHash = chunk.record != null ? chunk.record.sha256 : null;
+        String actualHash = FileHash.hashBytes(fileBytes);
+
+        if (expectedHash != null && !actualHash.equals(expectedHash)) {
+            System.out.println("[!] FILE TAMPERED! Expected hash " + truncHash(expectedHash) +
+                    " but got " + truncHash(actualHash));
+            System.out.println("[!] File discarded.");
+            return;
+        }
+        System.out.println("[+] Hash verified: " + truncHash(actualHash));
+
+        Path saved = fileManager.saveFile(chunk.filename, fileBytes);
+        String originPub = (chunk.record != null && chunk.record.owner_pub != null)
+                ? java.util.Base64.getEncoder().encodeToString(HEX.parseHex(chunk.record.owner_pub))
+                : session.getRemoteIdentityPubBase64();
+        fileManager.addReceivedFile(chunk.filename, fileBytes.length, actualHash, originPub);
+        System.out.println("[+] Saved to " + saved);
+
+        try {
+            encryptedStore.storeFile(chunk.filename, actualHash, originPub, fileBytes);
+        } catch (GeneralSecurityException e) {
+            System.err.println("[!] Failed to store encrypted copy: " + e.getMessage());
+        }
+    }
+
+    /** Handles Java-protocol chunked transfer (FILE_TRANSFER chunks + FILE_COMPLETE). */
     private void receiveFileData(PeerSession session, String expectedHash, String fileName, String origin) throws IOException {
+        receiveFileData(session, expectedHash, fileName, origin, false);
+    }
+
+    /**
+     * @param direct  when true, reads are taken directly from the socket
+     *                (must be used when called from the handlePeerMessages thread to avoid deadlock)
+     */
+    private void receiveFileData(PeerSession session, String expectedHash, String fileName,
+                                  String origin, boolean direct) throws IOException {
         System.out.println("[*] Receiving '" + fileName + "'...");
         Map<Integer, byte[]> chunks = new TreeMap<>();
         int totalChunks = -1;
 
         while (true) {
-            String dataJson = session.receiveEncrypted();
+            String dataJson = direct ? session.receiveEncryptedDirect() : session.receiveEncrypted();
             MessageType type = Messages.typeOf(dataJson);
             if (type == MessageType.ERROR) {
                 Messages.Error err = Messages.deserialize(dataJson, Messages.Error.class);
@@ -384,10 +541,9 @@ public class App implements InputProvider {
             }
             Messages.FileTransfer data = Messages.deserialize(dataJson, Messages.FileTransfer.class);
             totalChunks = data.total_chunks;
-            chunks.put(data.chunk_index, Base64.getDecoder().decode(data.data));
+            chunks.put(data.chunk_index, java.util.Base64.getDecoder().decode(data.data));
         }
 
-        // Reassemble
         java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
         for (int i = 0; i < totalChunks; i++) {
             byte[] chunk = chunks.get(i);
@@ -399,7 +555,6 @@ public class App implements InputProvider {
         }
         byte[] fileBytes = bos.toByteArray();
 
-        // Verify hash
         String actualHash = FileHash.hashBytes(fileBytes);
         if (!actualHash.equals(expectedHash)) {
             System.out.println("[!] FILE TAMPERED! Expected hash " + truncHash(expectedHash) +
@@ -409,12 +564,10 @@ public class App implements InputProvider {
         }
         System.out.println("[+] Hash verified: " + truncHash(actualHash));
 
-        // Save to shared directory
         Path saved = fileManager.saveFile(fileName, fileBytes);
         fileManager.addReceivedFile(fileName, fileBytes.length, actualHash, origin);
         System.out.println("[+] Saved to " + saved);
 
-        // Also store encrypted
         try {
             encryptedStore.storeFile(fileName, actualHash, origin, fileBytes);
         } catch (GeneralSecurityException e) {
@@ -422,10 +575,11 @@ public class App implements InputProvider {
         }
     }
 
+    // ── File send (push) ─────────────────────────────────────────────────────
+
     private void sendFile(String name, String filePath) throws IOException {
         PeerSession session = getSession(name);
         Path path = Path.of(filePath);
-        // If not found as given, try relative to the shared directory
         if (!Files.exists(path) || !Files.isRegularFile(path)) {
             path = fileManager.getSharedDir().resolve(filePath);
         }
@@ -436,26 +590,98 @@ public class App implements InputProvider {
         String hash = FileHash.hashFile(path);
         long size = Files.size(path);
 
-        Messages.FileOffer offer = new Messages.FileOffer();
-        offer.name = path.getFileName().toString();
-        offer.size = size;
-        offer.hash = hash;
-        session.sendEncrypted(Messages.serialize(offer));
+        if (session.isNativeProtocol()) {
+            // Native protocol: FILE_OFFER with embedded record, then wait for file_offer_response
+            Messages.NativeFileRecord record = new Messages.NativeFileRecord();
+            record.filename  = path.getFileName().toString();
+            record.sha256    = hash;
+            record.size      = (int) size;
+            record.owner     = peerName;
+            record.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
+            record.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(record)));
 
-        String respJson = session.receiveEncrypted();
-        if (Messages.typeOf(respJson) == MessageType.FILE_OFFER_DENY) {
-            System.out.println("[!] " + name + " rejected the file.");
-            return;
-        }
-        if (Messages.typeOf(respJson) != MessageType.FILE_OFFER_ACCEPT) {
-            System.out.println("[!] Unexpected response to file offer: " + respJson);
-            return;
-        }
+            Messages.NativeFileOffer offer = new Messages.NativeFileOffer();
+            offer.filename = record.filename;
+            offer.record   = record;
+            session.sendEncrypted(Messages.serialize(offer));
 
-        sendFileData(session, path, hash);
-        System.out.println("[+] File sent successfully.");
+            String respJson = session.receiveEncrypted();
+            String respType = PeerSession.rawType(respJson);
+            if ("file_offer_response".equals(respType)) {
+                Messages.NativeFileOfferResponse resp =
+                        Messages.deserialize(respJson, Messages.NativeFileOfferResponse.class);
+                if (!resp.accepted) {
+                    System.out.println("[!] " + name + " rejected the file.");
+                    return;
+                }
+            } else if ("error".equals(respType)) {
+                JsonObject err = JsonParser.parseString(respJson).getAsJsonObject();
+                System.out.println("[!] " + name + " rejected the file: " + err.get("message").getAsString());
+                return;
+            } else {
+                System.out.println("[!] Unexpected response to file offer: " + respJson);
+                return;
+            }
+
+            sendNativeFileChunk(session, path, hash);
+            System.out.println("[+] File sent successfully.");
+
+        } else {
+            // Java protocol: FILE_OFFER → FILE_OFFER_ACCEPT/DENY → FILE_TRANSFER chunks + FILE_COMPLETE
+            Messages.FileOffer offer = new Messages.FileOffer();
+            offer.name = path.getFileName().toString();
+            offer.size = size;
+            offer.hash = hash;
+            session.sendEncrypted(Messages.serialize(offer));
+
+            String respJson = session.receiveEncrypted();
+            if (Messages.typeOf(respJson) == MessageType.FILE_OFFER_DENY) {
+                System.out.println("[!] " + name + " rejected the file.");
+                return;
+            }
+            if (Messages.typeOf(respJson) != MessageType.FILE_OFFER_ACCEPT) {
+                System.out.println("[!] Unexpected response to file offer: " + respJson);
+                return;
+            }
+
+            sendFileData(session, path, hash);
+            System.out.println("[+] File sent successfully.");
+        }
     }
 
+    /**
+     * Build the canonical record-payload bytes that Python's FileManager._record_payload
+     * produces: compact JSON with sorted keys {"filename","owner","sha256","size"}.
+     */
+    private byte[] nativeFileRecordPayload(Messages.NativeFileRecord r) {
+        String json = "{\"filename\":\"" + r.filename + "\","
+                    + "\"owner\":\"" + r.owner + "\","
+                    + "\"sha256\":\"" + r.sha256 + "\","
+                    + "\"size\":" + r.size + "}";
+        return json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** Send a file as a single native file_chunk (the Go/Python convention). */
+    private void sendNativeFileChunk(PeerSession session, Path path, String hash) throws IOException {
+        byte[] fileBytes = Files.readAllBytes(path);
+
+        Messages.NativeFileRecord record = new Messages.NativeFileRecord();
+        record.filename  = path.getFileName().toString();
+        record.sha256    = hash;
+        record.size      = fileBytes.length;
+        record.owner     = peerName;
+        record.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
+        record.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(record)));
+
+        Messages.NativeFileChunk chunk = new Messages.NativeFileChunk();
+        chunk.filename = record.filename;
+        chunk.data     = HEX.formatHex(fileBytes);
+        chunk.record   = record;
+        chunk.done     = true;
+        session.sendEncrypted(Messages.serialize(chunk));
+    }
+
+    /** Send a file as Java-protocol chunked transfer (FILE_TRANSFER + FILE_COMPLETE). */
     private void sendFileData(PeerSession session, Path path, String hash) throws IOException {
         byte[] fileBytes = Files.readAllBytes(path);
         int chunkSize = ProtocolConstants.MAX_CHUNK_BYTES;
@@ -468,112 +694,275 @@ public class App implements InputProvider {
             byte[] chunk = Arrays.copyOfRange(fileBytes, offset, offset + len);
 
             Messages.FileTransfer data = new Messages.FileTransfer();
-            data.hash = hash;
+            data.hash        = hash;
             data.chunk_index = i;
             data.total_chunks = totalChunks;
-            data.data = Base64.getEncoder().encodeToString(chunk);
+            data.data        = java.util.Base64.getEncoder().encodeToString(chunk);
             session.sendEncrypted(Messages.serialize(data));
         }
         session.sendEncrypted(Messages.serialize(new Messages.FileComplete(hash)));
     }
 
+    // ── Incoming connection handler ──────────────────────────────────────────
+
     private void handleIncomingConnection(Socket socket) {
         try {
             PeerSession session = new PeerSession(socket, identity, trustStore, this);
-            session.handshakeAsResponder();
+            // Auto-detect whether the connecting peer speaks Java or native protocol
+            session.handshakeAutoDetect(peerName);
             String remoteName = session.getRemotePeerName();
-            System.out.println("\n[+] Incoming connection from '" + remoteName + "' — ready to receive.");
-
-            // Handle messages from this peer (incoming sessions are NOT in activeSessions;
-            // use 'connect <name>' to open an outgoing session for sending commands)
+            System.out.println("\n[+] Incoming connection from '" + remoteName + "' [" +
+                    (session.isNativeProtocol() ? "native" : "java") + "] — ready to receive.");
             handlePeerMessages(session, remoteName);
         } catch (IOException e) {
             System.err.println("[!] Incoming connection failed: " + e.getMessage());
         }
     }
 
-    private void handlePeerMessages(PeerSession session, String peerName) {
+    // ── Peer message dispatch ────────────────────────────────────────────────
+
+    private void handlePeerMessages(PeerSession session, String peerNameRemote) {
         try {
             while (!session.getSocket().isClosed()) {
-                String json = session.receiveEncrypted();
-                MessageType type = Messages.typeOf(json);
+                // Always read directly from the socket — this is the sole reader for this session.
+                String json = session.receiveEncryptedDirect();
+                String rawType = PeerSession.rawType(json);
 
-                switch (type) {
-                    case FILE_LIST_REQUEST -> {
+                // File list request (both protocols)
+                if ("FILE_LIST_REQUEST".equals(rawType) || "file_list_request".equals(rawType)) {
+                    if (session.isNativeProtocol()) {
+                        sendNativeFileListResponse(session);
+                    } else {
                         Messages.FileListResponse resp = new Messages.FileListResponse();
                         resp.files = fileManager.getFileList();
                         session.sendEncrypted(Messages.serialize(resp));
                     }
-                    case FILE_REQUEST -> {
-                        Messages.FileRequest req = Messages.deserialize(json, Messages.FileRequest.class);
-                        boolean accepted = consentManager.promptFileRequest(peerName, req.name, req.hash);
-                        if (accepted) {
-                            Messages.FileAccept accept = new Messages.FileAccept();
-                            accept.hash = req.hash;
-                            session.sendEncrypted(Messages.serialize(accept));
-                            Optional<Path> file = fileManager.getFileByHash(req.hash);
-                            if (file.isPresent()) {
-                                sendFileData(session, file.get(), req.hash);
-                            } else {
-                                session.sendEncrypted(Messages.serialize(
-                                        new Messages.Error("FILE_NOT_FOUND", "File not available")));
-                            }
-                        } else {
-                            session.sendEncrypted(Messages.serialize(new Messages.FileDeny(req.hash, "Request denied")));
-                        }
-                    }
-                    case FILE_OFFER -> {
-                        Messages.FileOffer offer = Messages.deserialize(json, Messages.FileOffer.class);
-                        boolean accepted = consentManager.promptFileOffer(peerName, offer.name, offer.size, offer.hash);
-                        if (accepted) {
-                            Messages.FileOfferAccept accept = new Messages.FileOfferAccept();
-                            accept.hash = offer.hash;
-                            session.sendEncrypted(Messages.serialize(accept));
-                            receiveFileData(session, offer.hash, offer.name, session.getRemoteIdentityPubBase64());
-                        } else {
-                            Messages.FileOfferDeny deny = new Messages.FileOfferDeny();
-                            deny.hash = offer.hash;
-                            session.sendEncrypted(Messages.serialize(deny));
-                        }
-                    }
-                    case KEY_MIGRATION -> {
-                        Messages.KeyMigration migration = Messages.deserialize(json, Messages.KeyMigration.class);
-                        if (KeyMigration.verify(migration, session.getRemoteIdentityPubBase64())) {
-                            KeyMigration.applyMigration(trustStore,
-                                    session.getRemoteIdentityPubBase64(), migration.new_identity_pub);
-                            System.out.println("[+] Key migration accepted for '" + peerName + "'");
-                        } else {
-                            System.out.println("[!] Key migration REJECTED for '" + peerName + "' — signature verification failed");
-                        }
-                    }
-                    case ERROR -> {
-                        Messages.Error err = Messages.deserialize(json, Messages.Error.class);
-                        System.out.printf("[!] Error from '%s': [%s] %s%n", peerName, err.code, err.message);
-                    }
-                    default -> System.out.println("[?] Unexpected message type from " + peerName + ": " + type);
+                    continue;
+                }
+
+                // File request — pull (both protocols)
+                if ("FILE_REQUEST".equals(rawType) || "file_request".equals(rawType)) {
+                    handleIncomingFileRequest(session, peerNameRemote, json, rawType);
+                    continue;
+                }
+
+                // File offer — push (both protocols)
+                if ("FILE_OFFER".equals(rawType) || "file_offer".equals(rawType)) {
+                    handleIncomingFileOffer(session, peerNameRemote, json, rawType);
+                    continue;
+                }
+
+                // Key migration (both protocols)
+                if ("KEY_MIGRATION".equals(rawType) || "key_migration".equals(rawType)) {
+                    handleIncomingKeyMigration(session, peerNameRemote, json, rawType);
+                    continue;
+                }
+
+                // Everything else is a response to a command we sent — route to the queue
+                // so the waiting command method (requestFileList, requestFile, sendFile) can pick it up.
+                try {
+                    session.enqueueReceived(json);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
         } catch (IOException e) {
             if (!session.getSocket().isClosed()) {
-                System.err.println("[!] Connection lost with '" + peerName + "': " + e.getMessage());
+                System.err.println("[!] Connection lost with '" + peerNameRemote + "': " + e.getMessage());
             }
-            activeSessions.remove(peerName);
+            activeSessions.remove(peerNameRemote);
         }
     }
+
+    private void sendNativeFileListResponse(PeerSession session) throws IOException {
+        List<Messages.FileEntry> javaEntries = fileManager.getFileList();
+        Messages.NativeFileListResponse resp = new Messages.NativeFileListResponse();
+        resp.files = new ArrayList<>();
+        for (Messages.FileEntry e : javaEntries) {
+            Messages.NativeFileRecord r = new Messages.NativeFileRecord();
+            r.filename  = e.name;
+            r.sha256    = e.hash;
+            r.size      = (int) e.size;
+            r.owner     = peerName;
+            r.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
+            r.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(r)));
+            resp.files.add(r);
+        }
+        session.sendEncrypted(Messages.serialize(resp));
+    }
+
+    private void handleIncomingFileRequest(PeerSession session, String peerNameRemote,
+                                            String json, String rawType) throws IOException {
+        String filename;
+        String requestedHash = null;
+        if ("file_request".equals(rawType)) {
+            Messages.NativeFileRequest req = Messages.deserialize(json, Messages.NativeFileRequest.class);
+            filename = req.filename;
+        } else {
+            Messages.FileRequest req = Messages.deserialize(json, Messages.FileRequest.class);
+            filename = req.name;
+            requestedHash = req.hash;
+        }
+
+        boolean accepted = consentManager.promptFileRequest(peerNameRemote, filename, requestedHash);
+
+        if ("file_request".equals(rawType)) {
+            // Native: send file_chunk on accept, error on deny
+            if (!accepted) {
+                session.sendEncrypted(Messages.serialize(
+                        new Messages.NativeError("File request rejected for " + filename)));
+                return;
+            }
+            Optional<Path> file = fileManager.getFileByName(filename);
+            if (file.isEmpty()) {
+                session.sendEncrypted(Messages.serialize(
+                        new Messages.NativeError("File not found: " + filename)));
+                return;
+            }
+            sendNativeFileChunk(session, file.get(), FileHash.hashFile(file.get()));
+        } else {
+            // Java: send FILE_ACCEPT then chunks, or FILE_DENY
+            if (accepted) {
+                Messages.FileAccept accept = new Messages.FileAccept();
+                accept.hash = requestedHash;
+                session.sendEncrypted(Messages.serialize(accept));
+                Optional<Path> file = fileManager.getFileByHash(requestedHash);
+                if (file.isPresent()) {
+                    sendFileData(session, file.get(), requestedHash);
+                } else {
+                    session.sendEncrypted(Messages.serialize(
+                            new Messages.Error("FILE_NOT_FOUND", "File not available")));
+                }
+            } else {
+                session.sendEncrypted(Messages.serialize(
+                        new Messages.FileDeny(requestedHash, "Request denied")));
+            }
+        }
+    }
+
+    private void handleIncomingFileOffer(PeerSession session, String peerNameRemote,
+                                          String json, String rawType) throws IOException {
+        String filename;
+        long size = 0;
+        String hash = null;
+
+        if ("file_offer".equals(rawType)) {
+            Messages.NativeFileOffer offer = Messages.deserialize(json, Messages.NativeFileOffer.class);
+            filename = offer.filename;
+            if (offer.record != null) {
+                size = offer.record.size;
+                hash = offer.record.sha256;
+            }
+        } else {
+            Messages.FileOffer offer = Messages.deserialize(json, Messages.FileOffer.class);
+            filename = offer.name;
+            size = offer.size;
+            hash = offer.hash;
+        }
+
+        boolean accepted = consentManager.promptFileOffer(peerNameRemote, filename, size, hash);
+
+        if ("file_offer".equals(rawType)) {
+            if (accepted) {
+                Messages.NativeFileOfferResponse resp = new Messages.NativeFileOfferResponse();
+                resp.filename = filename;
+                resp.accepted = true;
+                session.sendEncrypted(Messages.serialize(resp));
+                // Read directly from socket — this method is always called from handlePeerMessages,
+                // which owns the socket read side (cannot use receiveEncrypted/queue here).
+                String chunkJson = session.receiveEncryptedDirect();
+                if ("file_chunk".equals(PeerSession.rawType(chunkJson))) {
+                    receiveNativeFileChunk(session, chunkJson);
+                }
+            } else {
+                Messages.NativeFileOfferResponse resp = new Messages.NativeFileOfferResponse();
+                resp.filename = filename;
+                resp.accepted = false;
+                resp.message  = "Receiver rejected file offer";
+                session.sendEncrypted(Messages.serialize(resp));
+            }
+        } else {
+            if (accepted) {
+                Messages.FileOfferAccept accept = new Messages.FileOfferAccept();
+                accept.hash = hash;
+                session.sendEncrypted(Messages.serialize(accept));
+                receiveFileData(session, hash, filename, session.getRemoteIdentityPubBase64(), true);
+            } else {
+                Messages.FileOfferDeny deny = new Messages.FileOfferDeny();
+                deny.hash = hash;
+                session.sendEncrypted(Messages.serialize(deny));
+            }
+        }
+    }
+
+    private void handleIncomingKeyMigration(PeerSession session, String peerNameRemote,
+                                             String json, String rawType) {
+        try {
+            boolean verified;
+            String newIdentityPubBase64;
+
+            if ("key_migration".equals(rawType)) {
+                // Native format: hex-encoded fields
+                Messages.NativeKeyMigration migration =
+                        Messages.deserialize(json, Messages.NativeKeyMigration.class);
+                byte[] newPubBytes = HEX.parseHex(migration.new_pub);
+                newIdentityPubBase64 = java.util.Base64.getEncoder().encodeToString(newPubBytes);
+                verified = KeyMigration.verify(
+                        Messages.deserialize(buildJavaStyleMigration(migration), Messages.KeyMigration.class),
+                        session.getRemoteIdentityPubBase64());
+            } else {
+                // Java format: base64-encoded fields
+                Messages.KeyMigration migration = Messages.deserialize(json, Messages.KeyMigration.class);
+                verified = KeyMigration.verify(migration, session.getRemoteIdentityPubBase64());
+                newIdentityPubBase64 = migration.new_identity_pub;
+            }
+
+            if (verified) {
+                KeyMigration.applyMigration(trustStore, session.getRemoteIdentityPubBase64(), newIdentityPubBase64);
+                System.out.println("[+] Key migration accepted for '" + peerNameRemote + "'");
+            } else {
+                System.out.println("[!] Key migration REJECTED for '" + peerNameRemote + "' — signature verification failed");
+            }
+        } catch (Exception e) {
+            System.err.println("[!] Key migration error: " + e.getMessage());
+        }
+    }
+
+    /** Converts native hex migration fields to Java base64 format for KeyMigration.verify(). */
+    private String buildJavaStyleMigration(Messages.NativeKeyMigration m) {
+        String b64New = java.util.Base64.getEncoder().encodeToString(HEX.parseHex(m.new_pub));
+        String b64Old = java.util.Base64.getEncoder().encodeToString(HEX.parseHex(m.old_sig));
+        String b64New2 = java.util.Base64.getEncoder().encodeToString(HEX.parseHex(m.new_sig));
+        return "{\"type\":\"KEY_MIGRATION\",\"new_identity_pub\":\"" + b64New +
+               "\",\"signature_old\":\"" + b64Old + "\",\"signature_new\":\"" + b64New2 + "\"}";
+    }
+
+    // ── Key migration ────────────────────────────────────────────────────────
 
     private void migrateKey() throws IOException {
         System.out.println("[*] Generating new identity key...");
         Identity newIdentity = Identity.generate();
         System.out.println("[+] New fingerprint: " + Identity.formatFingerprint(newIdentity.getFingerprint()));
 
-        Messages.KeyMigration migrationMsg = KeyMigration.createMigrationMessage(identity, newIdentity);
+        Messages.KeyMigration javaMsg = KeyMigration.createMigrationMessage(identity, newIdentity);
+
+        // Build native-format migration message (hex fields) for native sessions
+        Messages.NativeKeyMigration nativeMsg = new Messages.NativeKeyMigration();
+        nativeMsg.new_pub = HEX.formatHex(java.util.Base64.getDecoder().decode(javaMsg.new_identity_pub));
+        nativeMsg.old_sig = HEX.formatHex(java.util.Base64.getDecoder().decode(javaMsg.signature_old));
+        nativeMsg.new_sig = HEX.formatHex(java.util.Base64.getDecoder().decode(javaMsg.signature_new));
 
         int notified = 0;
         for (var entry : activeSessions.entrySet()) {
             PeerSession session = entry.getValue();
             if (session.getSocket().isClosed()) continue;
             try {
-                session.sendEncrypted(Messages.serialize(migrationMsg));
+                if (session.isNativeProtocol()) {
+                    session.sendEncrypted(Messages.serialize(nativeMsg));
+                } else {
+                    session.sendEncrypted(Messages.serialize(javaMsg));
+                }
                 notified++;
                 System.out.println("[+] Notified '" + entry.getKey() + "' of key migration.");
             } catch (IOException e) {
@@ -581,12 +970,13 @@ public class App implements InputProvider {
             }
         }
 
-        // Replace identity
         identity = newIdentity;
         identity.save(dataDir);
         System.out.printf("[+] Key migration complete. Notified %d peer(s).%n", notified);
         System.out.println("[*] Offline contacts will need to re-verify manually.");
     }
+
+    // ── Misc commands ────────────────────────────────────────────────────────
 
     private void showStoredFiles() {
         try {

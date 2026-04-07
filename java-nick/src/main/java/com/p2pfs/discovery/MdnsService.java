@@ -8,6 +8,7 @@ import javax.jmdns.ServiceInfo;
 import javax.jmdns.ServiceListener;
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,7 +19,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class MdnsService implements Closeable {
 
-    public record PeerInfo(String name, String host, int port, String fingerprint) {}
+    /**
+     * @param clientType "java" for Java peers, "native" for Go/Python peers.
+     *                   Java peers are detected by the "client=java" TXT record.
+     */
+    public record PeerInfo(String name, String host, int port, String fingerprint, String clientType) {
+        public boolean isJavaPeer() { return "java".equals(clientType); }
+    }
 
     private JmDNS jmdns;
     private final Map<String, PeerInfo> discoveredPeers = new ConcurrentHashMap<>();
@@ -41,13 +48,23 @@ public class MdnsService implements Closeable {
     public void start(String peerName, int port, String fingerprint) throws IOException {
         this.localName = peerName;
         this.localFingerprint = fingerprint;
-        jmdns = JmDNS.create(InetAddress.getLocalHost());
+        // Mirror Python's get_local_ip() approach: the UDP connect to 8.8.8.8 forces
+        // the OS to pick the outbound interface without sending any packets, giving us
+        // the same IP that Go and Python use for mDNS — ensuring cross-client discovery.
+        InetAddress localAddr;
+        try (DatagramSocket probe = new DatagramSocket()) {
+            probe.connect(InetAddress.getByName("8.8.8.8"), 80);
+            localAddr = probe.getLocalAddress();
+        } catch (Exception e) {
+            localAddr = InetAddress.getLocalHost();
+        }
+        jmdns = JmDNS.create(localAddr);
 
         ServiceInfo serviceInfo = ServiceInfo.create(
                 ProtocolConstants.MDNS_SERVICE_TYPE,
                 peerName,
                 port,
-                "fingerprint=" + fingerprint + "&version=" + ProtocolConstants.VERSION
+                "fingerprint=" + fingerprint + "&version=" + ProtocolConstants.VERSION + "&client=java"
         );
         jmdns.registerService(serviceInfo);
 
@@ -79,12 +96,14 @@ public class MdnsService implements Closeable {
 
                 String fp = info.getPropertyString("fingerprint");
                 if (localFingerprint != null && localFingerprint.equals(fp)) return;
-
+                String client = info.getPropertyString("client");
+                String clientType = "java".equals(client) ? "java" : "native";
                 PeerInfo peer = new PeerInfo(
                         event.getName(),
                         addrs[0],
                         info.getPort(),
-                        fp != null ? fp : ""
+                        fp != null ? fp : "",
+                        clientType
                 );
 
                 // Only notify when a peer is genuinely new or its info has changed
@@ -98,6 +117,11 @@ public class MdnsService implements Closeable {
 
     public Map<String, PeerInfo> getDiscoveredPeers() {
         return Map.copyOf(discoveredPeers);
+    }
+
+    /** Manually register a peer without mDNS (used for cross-client testing). */
+    public void injectPeer(PeerInfo peer) {
+        discoveredPeers.put(peer.name(), peer);
     }
 
     @Override
