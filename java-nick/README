@@ -1,0 +1,102 @@
+# P2P Secure File Sharing — Java Client
+
+## Overview
+
+This is the Java implementation of a P2P secure file sharing system built for CISC 468. It operates with the Python and Go clients in this repository using a shared protocol defined in [`protocol/protocol.md`](../protocol/protocol.md).
+
+### Security Features
+
+- **Mutual authentication** via Ed25519 identity keypairs with out-of-band fingerprint verification
+- **Perfect forward secrecy** through ephemeral X25519 key exchange (fresh keypair per connection)
+- **Encrypted transport** using AES-256-GCM with session keys derived via HKDF-SHA256
+- **File integrity** verification using SHA-256 hashes
+- **Encrypted local storage** with AES-256-GCM (storage key derived from user passphrase via PBKDF2)
+- **Key migration** with dual-signature verification (old key signs new, new key signs old)
+
+### Libraries
+
+| Library | Version | Purpose |
+|---------|---------|---------|
+| Bouncy Castle (`bcprov-jdk18on`) | 1.80 | Ed25519, X25519, HKDF-SHA256 |
+| Gson | 2.11.0 | JSON serialization for protocol messages |
+| JmDNS | 3.6.0 | mDNS peer discovery on the local network |
+| JUnit 5 | 5.11.4 | Automated testing |
+
+## Prerequisites
+
+- Java 17+
+- Maven 3.8+
+
+## Build and Run
+
+```
+cd java-nick
+mvn clean package -DskipTests -q
+java -jar target/p2p-file-sharing-1.0-SNAPSHOT.jar
+```
+
+## Running Tests
+
+```
+mvn test
+```
+
+37 tests covering:
+
+- **Crypto unit tests** — Ed25519 sign/verify, X25519 key agreement, AES-256-GCM encrypt/decrypt, HKDF derivation
+- **Networking tests** — length-prefixed message framing, multi-message exchange, UTF-8 support
+- **Integration tests** — full mutual authentication handshake (trusted and untrusted peers), chunked file transfer with SHA-256 verification, tamper detection, encrypted storage round-trip, key migration with dual-signature verification
+
+## Architecture
+
+```
+src/main/java/com/p2pfs/
+├── App.java                 # CLI entry point and session orchestration
+├── crypto/
+│   ├── Identity.java        # Ed25519 keypair management, sign/verify, fingerprints
+│   ├── KeyExchange.java     # Ephemeral X25519 Diffie-Hellman key exchange
+│   ├── SessionCipher.java   # AES-256-GCM session encryption/decryption
+│   ├── Hkdf.java            # HKDF-SHA256 key derivation (RFC 5869)
+│   └── FileHash.java        # SHA-256 file hashing and integrity verification
+├── net/
+│   ├── TcpServer.java       # TCP listener, accepts incoming peer connections
+│   ├── TcpClient.java       # TCP connector for outgoing connections
+│   ├── MessageFramer.java   # Length-prefixed (4-byte big-endian) JSON framing over TCP
+│   └── PeerSession.java     # Authenticated session: handshake, encrypted send/receive
+├── discovery/
+│   └── MdnsService.java     # mDNS service registration and peer browsing via JmDNS
+├── protocol/
+│   ├── MessageType.java     # Enum of all protocol message types
+│   ├── Messages.java        # Message POJOs and JSON serialization
+│   └── ProtocolConstants.java
+├── trust/
+│   ├── TrustStore.java      # Persistent trusted contacts (JSON file)
+│   └── KeyMigration.java    # Key migration message creation and verification
+├── storage/
+│   └── EncryptedFileStore.java  # AES-256-GCM encrypted file storage with PBKDF2 key derivation
+└── sharing/
+    ├── FileManager.java     # Local file tracking, hash computation, file list generation
+    ├── FileListCache.java   # Caches peer file lists for offline peer lookup
+    └── ConsentManager.java  # CLI consent prompts for file requests and offers
+```
+
+## CLI Usage
+
+On startup, the application prompts for a peer name and storage passphrase, generates or loads an Ed25519 identity keypair, and begins listening for TCP connections and broadcasting via mDNS.
+
+| Command | Description |
+|---------|-------------|
+| `peers` | List peers discovered on the local network via mDNS |
+| `connect <name>` | Initiate a TCP connection and perform mutual authentication |
+| `list <name>` | Request a peer's shared file list (no consent required) |
+| `request <name> <file>` | Request a file from a peer (requires their consent) |
+| `send <name> <filepath>` | Offer a file to a peer (requires their consent) |
+| `migrate` | Generate a new identity keypair and notify connected peers |
+| `contacts` | Display all trusted contacts and their fingerprints |
+| `exit` | Shut down the application |
+
+Files to share are placed in `data/<peer-name>/shared/`. Received files are saved to the same directory and also stored encrypted in `data/<peer-name>/store/`.
+
+## Protocol
+
+All three clients (Java, Python, Go) implement the same wire protocol. See [`protocol/protocol.md`](../protocol/protocol.md) for the full specification, including message formats, handshake flow, and security considerations.
