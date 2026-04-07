@@ -18,6 +18,8 @@ import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * An authenticated, encrypted session with a remote peer.
@@ -47,6 +49,13 @@ public class PeerSession implements Closeable {
     private boolean authenticated = false;
     private boolean nativeProtocol = false;
 
+    /**
+     * When non-null, receiveEncrypted() pulls from this queue instead of the socket.
+     * Used by outgoing sessions so a background handlePeerMessages thread owns the socket
+     * and routes incoming request/response messages appropriately.
+     */
+    private volatile BlockingQueue<String> receiveQueue;
+
     private static final HexFormat HEX = HexFormat.of();
 
     public PeerSession(Socket socket, Identity localIdentity, TrustStore trustStore, InputProvider input) throws IOException {
@@ -62,6 +71,12 @@ public class PeerSession implements Closeable {
     public String getRemoteIdentityPubBase64() { return remoteIdentityPubBase64; }
     public String getRemotePeerName()     { return remotePeerName; }
     public Socket getSocket()             { return socket; }
+
+    /** Attach a queue so receiveEncrypted() reads from it instead of the socket. */
+    public void setReceiveQueue(BlockingQueue<String> queue) { this.receiveQueue = queue; }
+
+    /** Enqueue a pre-decrypted message for receiveEncrypted() to return. */
+    public void enqueueReceived(String json) throws InterruptedException { receiveQueue.put(json); }
 
     // ── Incoming auto-detection ──────────────────────────────────────────────
 
@@ -333,9 +348,29 @@ public class PeerSession implements Closeable {
 
     /**
      * Reads the next encrypted envelope and returns the decrypted inner JSON.
-     * Handles both ENCRYPTED (base64) and data (hex) formats automatically.
+     * When a receiveQueue is attached (outgoing sessions with a background reader),
+     * blocks on the queue instead of reading the socket directly.
      */
     public String receiveEncrypted() throws IOException {
+        BlockingQueue<String> q = receiveQueue;
+        if (q != null) {
+            try {
+                String msg = q.poll(30, TimeUnit.SECONDS);
+                if (msg == null) throw new IOException("Timeout waiting for response from peer");
+                return msg;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted waiting for response");
+            }
+        }
+        return receiveEncryptedDirect();
+    }
+
+    /**
+     * Reads and decrypts the next message directly from the socket.
+     * Used by the background handlePeerMessages thread which owns the socket read side.
+     */
+    public String receiveEncryptedDirect() throws IOException {
         if (cipher == null) throw new IOException("Session not established");
         String envJson = framer.receive();
         String outerType = rawType(envJson);
@@ -380,7 +415,9 @@ public class PeerSession implements Closeable {
         String fp = Identity.formatFingerprint(Identity.fingerprint(pubBytes));
         System.out.println("\n[!] Unknown peer with fingerprint:");
         System.out.println("    " + fp);
-        System.out.print("Trust this peer? Enter a name to trust, or 'n' to reject: ");
+        // Use println so async test harnesses can detect this line immediately
+        // (System.out.print has no newline and won't be flushed to async readers promptly).
+        System.out.println("Trust this peer? Enter a name to trust, or 'n' to reject:");
         System.out.flush();
         String response = input.readLine().trim();
         if (response.isEmpty() || response.equalsIgnoreCase("n")) {

@@ -167,6 +167,17 @@ public class App implements InputProvider {
                         if (rest.isEmpty()) { System.out.println("Usage: connect <name>"); break; }
                         connectToPeer(rest);
                     }
+                    // connect_ip <ip> <port> <name>  — bypasses mDNS for direct connections
+                    // Useful when cross-client mDNS discovery is unavailable (e.g. testing).
+                    case "connect_ip" -> {
+                        String[] ipParts = rest.split("\\s+", 3);
+                        if (ipParts.length < 3) {
+                            System.out.println("Usage: connect_ip <ip> <port> <name>"); break;
+                        }
+                        String ip = ipParts[0]; int port = Integer.parseInt(ipParts[1]); String name = ipParts[2];
+                        mdnsService.injectPeer(new com.p2pfs.discovery.MdnsService.PeerInfo(name, ip, port, "", "native"));
+                        connectToPeer(name);
+                    }
                     case "list" -> {
                         if (rest.isEmpty()) { System.out.println("Usage: list <name>"); break; }
                         requestFileList(rest);
@@ -227,6 +238,16 @@ public class App implements InputProvider {
         activeSessions.put(name, session);
         System.out.println("[+] Connected and authenticated with '" + name + "' [" +
                 (session.isNativeProtocol() ? "native" : "java") + "]");
+
+        // Start a background thread that owns socket reads and routes incoming requests.
+        // Responses to our own commands are delivered via the session's receiveQueue.
+        LinkedBlockingQueue<String> rq = new LinkedBlockingQueue<>();
+        session.setReceiveQueue(rq);
+        String peerNameCopy = name;
+        Thread listener = new Thread(() -> handlePeerMessages(session, peerNameCopy),
+                                     "peer-listener-" + name);
+        listener.setDaemon(true);
+        listener.start();
     }
 
     private PeerSession getSession(String name) throws IOException {
@@ -494,12 +515,21 @@ public class App implements InputProvider {
 
     /** Handles Java-protocol chunked transfer (FILE_TRANSFER chunks + FILE_COMPLETE). */
     private void receiveFileData(PeerSession session, String expectedHash, String fileName, String origin) throws IOException {
+        receiveFileData(session, expectedHash, fileName, origin, false);
+    }
+
+    /**
+     * @param direct  when true, reads are taken directly from the socket
+     *                (must be used when called from the handlePeerMessages thread to avoid deadlock)
+     */
+    private void receiveFileData(PeerSession session, String expectedHash, String fileName,
+                                  String origin, boolean direct) throws IOException {
         System.out.println("[*] Receiving '" + fileName + "'...");
         Map<Integer, byte[]> chunks = new TreeMap<>();
         int totalChunks = -1;
 
         while (true) {
-            String dataJson = session.receiveEncrypted();
+            String dataJson = direct ? session.receiveEncryptedDirect() : session.receiveEncrypted();
             MessageType type = Messages.typeOf(dataJson);
             if (type == MessageType.ERROR) {
                 Messages.Error err = Messages.deserialize(dataJson, Messages.Error.class);
@@ -568,7 +598,7 @@ public class App implements InputProvider {
             record.size      = (int) size;
             record.owner     = peerName;
             record.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
-            record.signature = "";
+            record.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(record)));
 
             Messages.NativeFileOffer offer = new Messages.NativeFileOffer();
             offer.filename = record.filename;
@@ -619,6 +649,18 @@ public class App implements InputProvider {
         }
     }
 
+    /**
+     * Build the canonical record-payload bytes that Python's FileManager._record_payload
+     * produces: compact JSON with sorted keys {"filename","owner","sha256","size"}.
+     */
+    private byte[] nativeFileRecordPayload(Messages.NativeFileRecord r) {
+        String json = "{\"filename\":\"" + r.filename + "\","
+                    + "\"owner\":\"" + r.owner + "\","
+                    + "\"sha256\":\"" + r.sha256 + "\","
+                    + "\"size\":" + r.size + "}";
+        return json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     /** Send a file as a single native file_chunk (the Go/Python convention). */
     private void sendNativeFileChunk(PeerSession session, Path path, String hash) throws IOException {
         byte[] fileBytes = Files.readAllBytes(path);
@@ -629,7 +671,7 @@ public class App implements InputProvider {
         record.size      = fileBytes.length;
         record.owner     = peerName;
         record.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
-        record.signature = "";
+        record.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(record)));
 
         Messages.NativeFileChunk chunk = new Messages.NativeFileChunk();
         chunk.filename = record.filename;
@@ -682,7 +724,8 @@ public class App implements InputProvider {
     private void handlePeerMessages(PeerSession session, String peerNameRemote) {
         try {
             while (!session.getSocket().isClosed()) {
-                String json = session.receiveEncrypted();
+                // Always read directly from the socket — this is the sole reader for this session.
+                String json = session.receiveEncryptedDirect();
                 String rawType = PeerSession.rawType(json);
 
                 // File list request (both protocols)
@@ -709,29 +752,20 @@ public class App implements InputProvider {
                     continue;
                 }
 
-                // Java-only: consent responses from the remote side to OUR file request/offer
-                if ("FILE_OFFER_ACCEPT".equals(rawType) || "FILE_OFFER_DENY".equals(rawType)) {
-                    // handled inline in sendFile, shouldn't arrive here
-                    System.out.println("[?] Unexpected " + rawType + " from " + peerNameRemote);
-                    continue;
-                }
-
                 // Key migration (both protocols)
                 if ("KEY_MIGRATION".equals(rawType) || "key_migration".equals(rawType)) {
                     handleIncomingKeyMigration(session, peerNameRemote, json, rawType);
                     continue;
                 }
 
-                // Errors (both protocols)
-                if ("ERROR".equals(rawType) || "error".equals(rawType)) {
-                    JsonObject err = JsonParser.parseString(json).getAsJsonObject();
-                    String msg = err.has("message") ? err.get("message").getAsString()
-                                : (err.has("code") ? err.get("code").getAsString() : json);
-                    System.out.printf("[!] Error from '%s': %s%n", peerNameRemote, msg);
-                    continue;
+                // Everything else is a response to a command we sent — route to the queue
+                // so the waiting command method (requestFileList, requestFile, sendFile) can pick it up.
+                try {
+                    session.enqueueReceived(json);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
-
-                System.out.println("[?] Unexpected message type from " + peerNameRemote + ": " + rawType);
             }
         } catch (IOException e) {
             if (!session.getSocket().isClosed()) {
@@ -752,7 +786,7 @@ public class App implements InputProvider {
             r.size      = (int) e.size;
             r.owner     = peerName;
             r.owner_pub = HEX.formatHex(identity.getPublicKeyBytes());
-            r.signature = "";
+            r.signature = HEX.formatHex(identity.sign(nativeFileRecordPayload(r)));
             resp.files.add(r);
         }
         session.sendEncrypted(Messages.serialize(resp));
@@ -835,8 +869,9 @@ public class App implements InputProvider {
                 resp.filename = filename;
                 resp.accepted = true;
                 session.sendEncrypted(Messages.serialize(resp));
-                // Now receive the file_chunk
-                String chunkJson = session.receiveEncrypted();
+                // Read directly from socket — this method is always called from handlePeerMessages,
+                // which owns the socket read side (cannot use receiveEncrypted/queue here).
+                String chunkJson = session.receiveEncryptedDirect();
                 if ("file_chunk".equals(PeerSession.rawType(chunkJson))) {
                     receiveNativeFileChunk(session, chunkJson);
                 }
@@ -852,7 +887,7 @@ public class App implements InputProvider {
                 Messages.FileOfferAccept accept = new Messages.FileOfferAccept();
                 accept.hash = hash;
                 session.sendEncrypted(Messages.serialize(accept));
-                receiveFileData(session, hash, filename, session.getRemoteIdentityPubBase64());
+                receiveFileData(session, hash, filename, session.getRemoteIdentityPubBase64(), true);
             } else {
                 Messages.FileOfferDeny deny = new Messages.FileOfferDeny();
                 deny.hash = hash;
