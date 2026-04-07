@@ -6,10 +6,7 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-/**
- * Reads and writes length-prefixed UTF-8 JSON messages over a TCP socket.
- * Wire format: [4-byte big-endian uint32 payload length][UTF-8 JSON payload]
- */
+// wire format: [4-byte big-endian length][UTF-8 JSON payload]
 public class MessageFramer implements Closeable {
 
     private final DataInputStream in;

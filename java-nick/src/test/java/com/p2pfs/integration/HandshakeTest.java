@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class HandshakeTest {
 
     /**
-     * Two peers perform a full handshake: AUTH_REQUEST → AUTH_RESPONSE → AUTH_SUCCESS,
+     * Two peers perform a full handshake: AUTH_REQUEST -> AUTH_RESPONSE -> AUTH_SUCCESS,
      * then exchange an encrypted message to verify the session works.
      */
     @Test

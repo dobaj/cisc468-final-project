@@ -2,9 +2,7 @@ package com.p2pfs.sharing;
 
 import com.p2pfs.InputProvider;
 
-/**
- * Handles user consent for file operations via CLI prompts.
- */
+// prompts the user to accept or reject incoming file requests and offers
 public class ConsentManager {
 
     private final InputProvider input;
@@ -13,18 +11,12 @@ public class ConsentManager {
         this.input = input;
     }
 
-    /**
-     * Asks the user whether to accept an incoming file request.
-     */
     public boolean promptFileRequest(String peerName, String fileName, String hash) {
         System.out.printf("%n[?] '%s' is requesting file '%s' (hash: %s)%n", peerName, fileName, truncateHash(hash));
         System.out.print("    Allow? [y/n]: ");
         return readYesNo();
     }
 
-    /**
-     * Asks the user whether to accept an incoming file offer (push).
-     */
     public boolean promptFileOffer(String peerName, String fileName, long size, String hash) {
         System.out.printf("%n[?] '%s' wants to send you '%s' (%d bytes, hash: %s)%n",
                 peerName, fileName, size, truncateHash(hash));

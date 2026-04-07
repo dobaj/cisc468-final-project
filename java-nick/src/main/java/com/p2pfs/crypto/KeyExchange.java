@@ -6,10 +6,7 @@ import org.bouncycastle.crypto.params.X25519PublicKeyParameters;
 
 import java.security.SecureRandom;
 
-/**
- * X25519 ephemeral key exchange.
- * Each instance represents one side of a Diffie-Hellman exchange.
- */
+// X25519 ephemeral Diffie-Hellman, one instance per handshake
 public class KeyExchange {
 
     private final X25519PrivateKeyParameters privateKey;
@@ -25,9 +22,6 @@ public class KeyExchange {
         return publicKey.getEncoded();
     }
 
-    /**
-     * Computes the shared secret using this side's private key and the remote side's public key.
-     */
     public byte[] computeSharedSecret(byte[] remotePublicKeyBytes) {
         X25519PublicKeyParameters remotePub = new X25519PublicKeyParameters(remotePublicKeyBytes, 0);
         X25519Agreement agreement = new X25519Agreement();

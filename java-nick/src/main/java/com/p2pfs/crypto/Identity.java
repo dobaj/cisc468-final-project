@@ -12,10 +12,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
 
-/**
- * Manages an Ed25519 long-term identity keypair.
- * Provides sign, verify, and fingerprint operations.
- */
+// Ed25519 long-term identity keypair, sign, verify, fingerprint
 public class Identity {
 
     private final Ed25519PrivateKeyParameters privateKey;
@@ -49,9 +46,7 @@ public class Identity {
         return privateKey.getEncoded();
     }
 
-    /**
-     * SHA-256 fingerprint of the public key, returned as hex.
-     */
+    // SHA-256 of the public key as a hex string
     public String getFingerprint() {
         return fingerprint(getPublicKeyBytes());
     }
@@ -66,9 +61,7 @@ public class Identity {
         }
     }
 
-    /**
-     * Formats a fingerprint hex string into groups of 4 for readability.
-     */
+    // breaks a hex fingerprint into spaced groups of 4 for display
     public static String formatFingerprint(String hex) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < hex.length(); i += 4) {

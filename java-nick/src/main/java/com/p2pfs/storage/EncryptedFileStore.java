@@ -20,12 +20,7 @@ import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.*;
 
-/**
- * Encrypted local file storage using AES-256-GCM.
- * The storage key is derived from a user passphrase via PBKDF2-HMAC-SHA256.
- * Each file is stored as: [12-byte IV][ciphertext + GCM tag].
- * A metadata index maps file hashes to encrypted file paths.
- */
+// AES-256-GCM file storage; key from PBKDF2; each file is [12-byte IV][ciphertext+tag]; index is also encrypted
 public class EncryptedFileStore {
 
     private static final int GCM_TAG_BITS = 128;
@@ -67,9 +62,6 @@ public class EncryptedFileStore {
         this.storageKey = new SecretKeySpec(keyBytes, "AES");
     }
 
-    /**
-     * Encrypts and stores a file. Returns the encrypted file path.
-     */
     public String storeFile(String name, String hash, String origin, byte[] plaintext) throws IOException, GeneralSecurityException {
         byte[] iv = new byte[ProtocolConstants.GCM_IV_BYTES];
         random.nextBytes(iv);
@@ -86,7 +78,6 @@ public class EncryptedFileStore {
         out.write(ciphertext);
         Files.write(encPath, out.toByteArray());
 
-        // Update index
         List<FileMetadata> index = loadIndex();
         index.removeIf(m -> m.hash.equals(hash));
         FileMetadata meta = new FileMetadata();
@@ -101,9 +92,6 @@ public class EncryptedFileStore {
         return encFilename;
     }
 
-    /**
-     * Retrieves and decrypts a file by its hash.
-     */
     public Optional<byte[]> retrieveFile(String hash) throws IOException, GeneralSecurityException {
         List<FileMetadata> index = loadIndex();
         Optional<FileMetadata> meta = index.stream().filter(m -> m.hash.equals(hash)).findFirst();
@@ -121,9 +109,6 @@ public class EncryptedFileStore {
         return Optional.of(cipher.doFinal(ciphertext));
     }
 
-    /**
-     * Returns metadata for all stored files.
-     */
     public List<FileMetadata> listFiles() throws IOException, GeneralSecurityException {
         return loadIndex();
     }

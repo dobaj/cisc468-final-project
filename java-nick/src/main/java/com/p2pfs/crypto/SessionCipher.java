@@ -8,10 +8,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
-/**
- * AES-256-GCM session encryption/decryption.
- * The GCM tag is appended to the ciphertext by the JCA implementation.
- */
+// AES-256-GCM session cipher; GCM tag is appended to ciphertext by JCA
 public class SessionCipher {
 
     private static final int GCM_TAG_BITS = 128;
@@ -29,9 +26,6 @@ public class SessionCipher {
 
     public record EncryptedPayload(byte[] iv, byte[] ciphertext) {}
 
-    /**
-     * Encrypts plaintext with a random IV. Returns IV and ciphertext (with appended GCM tag).
-     */
     public EncryptedPayload encrypt(byte[] plaintext) throws GeneralSecurityException {
         byte[] iv = new byte[ProtocolConstants.GCM_IV_BYTES];
         random.nextBytes(iv);
@@ -45,9 +39,6 @@ public class SessionCipher {
         return new EncryptedPayload(iv, ciphertext);
     }
 
-    /**
-     * Decrypts ciphertext (with appended GCM tag) using the given IV.
-     */
     public byte[] decrypt(byte[] iv, byte[] ciphertext) throws GeneralSecurityException {
         Cipher cipher = Cipher.getInstance(ALGORITHM);
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new GCMParameterSpec(GCM_TAG_BITS, iv));

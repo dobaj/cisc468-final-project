@@ -13,16 +13,10 @@ import java.net.InetAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * mDNS-based peer discovery using JmDNS.
- * Registers the local peer and discovers remote peers on the LAN.
- */
+// mDNS peer discovery; registers locally and browses for others on the LAN
 public class MdnsService implements Closeable {
 
-    /**
-     * @param clientType "java" for Java peers, "native" for Go/Python peers.
-     *                   Java peers are detected by the "client=java" TXT record.
-     */
+    // clientType is "java" or "native", detected via the TXT record "client=java"
     public record PeerInfo(String name, String host, int port, String fingerprint, String clientType) {
         public boolean isJavaPeer() { return "java".equals(clientType); }
     }
@@ -42,15 +36,10 @@ public class MdnsService implements Closeable {
         this.listener = listener;
     }
 
-    /**
-     * Starts mDNS, registers this peer, and begins browsing for others.
-     */
     public void start(String peerName, int port, String fingerprint) throws IOException {
         this.localName = peerName;
         this.localFingerprint = fingerprint;
-        // Mirror Python's get_local_ip() approach: the UDP connect to 8.8.8.8 forces
-        // the OS to pick the outbound interface without sending any packets, giving us
-        // the same IP that Go and Python use for mDNS — ensuring cross-client discovery.
+        // UDP connect to 8.8.8.8 tricks the OS into revealing the outbound interface without sending packets
         InetAddress localAddr;
         try (DatagramSocket probe = new DatagramSocket()) {
             probe.connect(InetAddress.getByName("8.8.8.8"), 80);
@@ -89,9 +78,7 @@ public class MdnsService implements Closeable {
                 String[] addrs = info.getHostAddresses();
                 if (addrs.length == 0) return;
 
-                // Skip our own advertisement — mDNS reflects it back to us.
-                // Filter by name (always available) and also by fingerprint (available
-                // once TXT records resolve) to catch both resolution events.
+                // skip our own reflected advertisement (by name, or fingerprint if TXT has resolved)
                 if (localName.equals(event.getName())) return;
 
                 String fp = info.getPropertyString("fingerprint");
@@ -106,7 +93,6 @@ public class MdnsService implements Closeable {
                         clientType
                 );
 
-                // Only notify when a peer is genuinely new or its info has changed
                 PeerInfo existing = discoveredPeers.put(event.getName(), peer);
                 if (listener != null && !peer.equals(existing)) {
                     listener.onPeerDiscovered(peer);
@@ -119,7 +105,7 @@ public class MdnsService implements Closeable {
         return Map.copyOf(discoveredPeers);
     }
 
-    /** Manually register a peer without mDNS (used for cross-client testing). */
+    // bypass mDNS, inject a peer directly (used in tests for cross-client connections)
     public void injectPeer(PeerInfo peer) {
         discoveredPeers.put(peer.name(), peer);
     }

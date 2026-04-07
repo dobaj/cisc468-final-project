@@ -13,10 +13,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 
-/**
- * Persistent store of trusted peer identities.
- * Maps peer names to their Ed25519 public keys and fingerprints.
- */
+// persists trusted peer identities (name -> Ed25519 pub key + fingerprint)
 public class TrustStore {
 
     public static class Contact {
@@ -70,9 +67,7 @@ public class TrustStore {
         return contacts.stream().filter(c -> c.name.equalsIgnoreCase(name)).findFirst();
     }
 
-    /**
-     * Updates a contact's public key (used during key migration).
-     */
+    // swaps in a new public key during key migration
     public void updatePublicKey(String oldPubBase64, String newPubBase64) throws IOException {
         for (Contact c : contacts) {
             if (c.identity_pub.equals(oldPubBase64)) {
