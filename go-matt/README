@@ -1,0 +1,11 @@
+You can run the app using main.go. First input a username and password, and then enter a command.
+Usage:
+View list of peers:     peers
+Connect to peer:        connect [peer name]
+View files from peer:   list [peer name]
+Request file from peer: request [peer name] [filename]
+View encrypted files:   stored
+Decrypt and save file:  decrypt [filename]
+Migrate to new keys:    migrate
+
+Run tests using: go test -v

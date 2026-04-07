@@ -88,7 +88,7 @@ func Save(i *Identity) error {
 		return errors.New("Error writing to file")
 	}
 	pem.Encode(privFile, &pemBlock)
-	return nil
+	return privFile.Close()
 }
 
 func RotateKey(i *Identity) error {
