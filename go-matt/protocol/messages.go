@@ -4,41 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
-
-	"github.com/dobaj/cisc468-final-project/sharing"
 )
-
-// import json
-
-// from protocol.message_types import (
-//     DATA,
-//     ERROR,
-//     FILE_CHUNK,
-//     FILE_LIST_REQUEST,
-//     FILE_LIST_RESPONSE,
-//     FILE_OFFER,
-//     FILE_OFFER_RESPONSE,
-//     FILE_REQUEST,
-//     HELLO,
-//     KEY_EXCHANGE,
-//     KEY_MIGRATION,
-// )
-
-// def key_exchange(pub_hex: str):
-//     return {
-//         "type": KEY_EXCHANGE,
-//         "pub": pub_hex,
-//     }
-
-// func hello(name string, identity_pub_hex string, fingerprint string) (hello_msg){
-
-//     return hello_msg {
-//         Type: HELLO,
-//         Name: name,
-//         Identity_Pub: identity_pub_hex,
-//         Fingerprint: fingerprint,
-//     }
-// }
 
 func Key_Exchange(pub []byte) []byte {
 	pub_hex := hex.EncodeToString(pub)
@@ -89,7 +55,7 @@ func FileListRequest() []byte {
 	return msg
 }
 
-func FileListResponse(records []*sharing.FileRecord) []byte {
+func FileListResponse(records []*FileRecord) []byte {
 	msg, err := json.Marshal(File_List_Res_Msg{FILE_LIST_RESPONSE, records})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
@@ -100,7 +66,7 @@ func FileListResponse(records []*sharing.FileRecord) []byte {
 }
 
 func FileRequest(filename string) []byte {
-    msg, err := json.Marshal(File_Req_Msg{FILE_REQUEST, filename})
+	msg, err := json.Marshal(File_Req_Msg{FILE_REQUEST, filename})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}
@@ -124,16 +90,16 @@ func FileRequest(filename string) []byte {
 //         "message": message,
 //     }
 
-func FileChunk(filename string, data []byte, record *sharing.FileRecord, done bool) []byte {
-    dataHex := hex.EncodeToString(data)
+func FileChunk(filename string, data []byte, record *FileRecord, done bool) []byte {
+	dataHex := hex.EncodeToString(data)
 
-    msg, err := json.Marshal(File_Chunk_Msg{
-        Type: FILE_CHUNK,
-        Filename: filename,
-        Data: dataHex,
-        Record: record,
-        Done: done,
-    })
+	msg, err := json.Marshal(File_Chunk_Msg{
+		Type:     FILE_CHUNK,
+		Filename: filename,
+		Data:     dataHex,
+		Record:   record,
+		Done:     done,
+	})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}
@@ -142,16 +108,22 @@ func FileChunk(filename string, data []byte, record *sharing.FileRecord, done bo
 	return msg
 }
 
-// def key_migration(new_pub: str, old_sig: str, new_sig: str):
-//     return {
-//         "type": KEY_MIGRATION,
-//         "new_pub": new_pub,
-//         "old_sig": old_sig,
-//         "new_sig": new_sig,
-//     }
+func KeyMigration(newpub []byte, oldsig []byte, newsig []byte) []byte {
+	newPubHex := hex.EncodeToString(newpub)
+	oldSigHex := hex.EncodeToString(oldsig)
+	newSigHex := hex.EncodeToString(newsig)
+
+	msg, err := json.Marshal(Key_Migration_Msg{KEY_MIGRATION, newPubHex, oldSigHex, newSigHex})
+	if err != nil {
+		log.Panicln("Something went wrong", err)
+		return []byte{}
+	}
+
+	return msg
+}
 
 func ErrorMessage(message string) []byte {
-    msg, err := json.Marshal(Error_Msg{ERROR, message})
+	msg, err := json.Marshal(Error_Msg{ERROR, message})
 	if err != nil {
 		log.Panicln("Something went wrong", err)
 		return []byte{}
@@ -159,9 +131,3 @@ func ErrorMessage(message string) []byte {
 
 	return msg
 }
-
-// def encode_payload(message: dict) -> bytes:
-//     return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-// def decode_payload(payload: bytes) -> dict:
-//     return json.loads(payload.decode("utf-8"))

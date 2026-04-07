@@ -2,9 +2,6 @@ package protocol
 
 import (
 	"net"
-	"sync"
-
-	"github.com/dobaj/cisc468-final-project/sharing"
 )
 
 const HKDF_INFO = "session key"
@@ -24,6 +21,23 @@ const FILE_OFFER_RESPONSE = "file_offer_response"
 const FILE_CHUNK = "file_chunk"
 const KEY_MIGRATION = "key_migration"
 const ERROR = "error"
+
+type FileRecord struct {
+	Owner     string `json:"owner"`
+	OwnerPub  string `json:"owner_pub"`
+	Filename  string `json:"filename"`
+	Sha256    string `json:"sha256"`
+	Size      int    `json:"size"`
+	Signature string `json:"signature"`
+}
+
+type PartialFileRecord struct {
+	// Used to make signature
+	Filename string `json:"filename"`
+	Owner    string `json:"owner"`
+	Sha256   string `json:"sha256"`
+	Size     int    `json:"size"`
+}
 
 // Messages
 type Hello_Msg struct {
@@ -49,8 +63,8 @@ type Data_Msg struct {
 }
 
 type File_List_Res_Msg struct {
-	Type  string                `json:"type"`
-	Files []*sharing.FileRecord `json:"files"`
+	Type  string        `json:"type"`
+	Files []*FileRecord `json:"files"`
 }
 
 type File_Req_Msg struct {
@@ -59,25 +73,30 @@ type File_Req_Msg struct {
 }
 
 type File_Chunk_Msg struct {
-	Type     string              `json:"type"`
-	Filename string              `json:"filename"`
-	Data     string              `json:"data"`
-	Record   *sharing.FileRecord `json:"record"`
-	Done bool `json:"done"`
+	Type     string      `json:"type"`
+	Filename string      `json:"filename"`
+	Data     string      `json:"data"`
+	Record   *FileRecord `json:"record"`
+	Done     bool        `json:"done"`
+}
+
+type Key_Migration_Msg struct {
+	Type   string `json:"type"`
+	NewPub string `json:"new_pub"`
+	OldSig string `json:"old_sig"`
+	NewSig string `json:"new_sig"`
 }
 
 type Error_Msg struct {
 	Type    string `json:"type"`
-	Message   string `json:"message"`
+	Message string `json:"message"`
 }
 
 // Peer stuff
 type ActivePeer struct {
-	Name          string
-	Sock          net.Conn
-	Cipher        []byte
-	Fingerprint   string
-	IdentityPub   string
-	PendingOffers map[string]string
-	Lock          sync.Mutex
+	Name        string
+	Sock        net.Conn
+	Cipher      []byte
+	Fingerprint string
+	IdentityPub string
 }

@@ -1,3 +1,10 @@
+report/*synctex.gz
+report/*.log
+report/*.fls
+report/*.fdb_latexmk
+report/*.blg
+report/*.bbl
+report/*.aux
 venv/
 .idea/
 __pycache__/

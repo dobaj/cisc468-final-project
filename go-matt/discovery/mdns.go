@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/grandcat/zeroconf"
@@ -33,6 +34,14 @@ func Init(name string, port int) {
 	}
 
 	log.Println("mDNS registered ("+"localhost:"+fmt.Sprint(port)+")")
+	for {
+		server.Shutdown()
+		server, err = zeroconf.Register(name, protocol.SERVICE_TYPE, "local.", port, []string{"txtv=0", "lo=1", "la=2"}, nil)
+		if err != nil {
+			log.Fatalln("Failed to browse:", err.Error())
+		}
+        time.Sleep(5 * time.Second) // Reregister to aggressively announce
+    }
 }
 
 func Listen() {
@@ -60,10 +69,13 @@ func Listen() {
 
 	listenContext, cancel = context.WithCancel(context.Background())
 
-	err = resolver.Browse(listenContext, protocol.SERVICE_TYPE, "local.", entries)
-	if err != nil {
-		log.Fatalln("Failed to browse:", err.Error())
-	}
+	for {
+        err = resolver.Browse(listenContext, protocol.SERVICE_TYPE, "local.", entries)
+		if err != nil {
+			log.Fatalln("Failed to browse:", err.Error())
+		}
+        time.Sleep(5 * time.Second) // Rebrowse to aggressively discover
+    }
 }
 
 func Shutdown() {

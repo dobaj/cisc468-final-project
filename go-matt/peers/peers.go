@@ -13,10 +13,11 @@ import (
 	"github.com/dobaj/cisc468-final-project/crypt"
 	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/dobaj/cisc468-final-project/sharing"
+	"github.com/dobaj/cisc468-final-project/storage"
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
-func PeerConnect(conn net.Conn, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager, incoming bool) error {
+func PeerConnect(conn net.Conn, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager, storeStore *storage.StoreStore, incoming bool) error {
 
 	defer conn.Close()
 
@@ -129,7 +130,7 @@ func PeerConnect(conn net.Conn, i *crypt.Identity, trustedStore *trust.TrustStor
 
 			data, err := crypt.Decrypt(shared_key, nonce, payload)
 
-			HandleMessage(&activePeer, data, file_manager, i)
+			HandleMessage(&activePeer, data, file_manager, i, storeStore, trustedStore)
 			continue
 		}
 
@@ -170,13 +171,14 @@ func AuthenticatePeer(msg protocol.Hello_Msg, trustStore *trust.TrustStore) erro
 
 	// Not a new peer, check they are the same person
 	if expected != fingerprint {
+		println(expected, fingerprint)
 		return errors.New("fingerprint mismatch")
 	}
 
 	return nil
 }
 
-func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *sharing.FileManager, identity *crypt.Identity) error {
+func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *sharing.FileManager, identity *crypt.Identity, storeStore *storage.StoreStore, trustStore *trust.TrustStore) error {
 	var msg protocol.Msg
 	err := json.Unmarshal(message, &msg)
 	if err != nil {
@@ -187,7 +189,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 	// Now let's see what kind of message it is
 	if msg.Type == protocol.FILE_LIST_REQUEST {
 		// Make list of records by iterating through each file
-		records := make([]*sharing.FileRecord, 0)
+		records := make([]*protocol.FileRecord, 0)
 		files := file_manager.ListFiles()
 		for _, filename := range files {
 			newRecord, err := file_manager.BuildFileRecord(filename, identity)
@@ -217,7 +219,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 
 		println("Files shared from " + peer.Name + ":")
 		for _, record := range unpack.Files {
-			println("    " + record.Filename + " (" + record.Sha256[len(record.Sha256)-16:] + ")")
+			println("    " + record.Filename + " - " + record.Owner + " - (" + record.Sha256[len(record.Sha256)-16:] + ")")
 		}
 		print("> ")
 		return nil
@@ -229,12 +231,12 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 			log.Println("Error unpacking file request")
 			return err
 		}
-        filename := unpack.Filename
-		
+		filename := unpack.Filename
+
 		// Make sure this user approves
-        if !RequestConsent(peer.Name, "request", filename) {
-            Send(peer,protocol.ErrorMessage("File request rejected - "+filename))
-            return nil
+		if !RequestConsent(peer.Name, "request", filename) {
+			Send(peer, protocol.ErrorMessage("File request rejected - "+filename))
+			return nil
 		}
 		data, record, err := file_manager.GetFile(filename, identity)
 		if err != nil {
@@ -245,7 +247,7 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 
 		// Okay now just send
 		Send(peer, protocol.FileChunk(filename, data, record, true))
-		println("Sent '"+filename+"' to "+peer.Name)
+		println("Sent '" + filename + "' to " + peer.Name)
 		return nil
 	}
 	if msg.Type == protocol.FILE_CHUNK {
@@ -255,19 +257,69 @@ func HandleMessage(peer *protocol.ActivePeer, message []byte, file_manager *shar
 			log.Println("Error unpacking file chunk")
 			return err
 		}
-        filename := unpack.Filename
-        data, err := hex.DecodeString(unpack.Data)
+		filename := unpack.Filename
+		data, err := hex.DecodeString(unpack.Data)
 		if err != nil {
 			log.Println("Error unpacking file chunk")
 			return err
 		}
-        record := unpack.Record
-        
-        // file_manager.save_verified_file(filename, data, record)
-		file_manager.VerifyAndSave(record, data)
-        // encrypted_store.save_bytes(filename, data)
-        println("Received and verified '"+filename+"' from "+peer.Name)
-        return nil
+		record := unpack.Record
+
+		file, err := file_manager.VerifyAndSave(record, data)
+		if err != nil {
+			log.Println("Error saving file")
+			return err
+		}
+		encfile, err := storeStore.SaveFile(filename, record, data)
+		if err != nil {
+			log.Println("Error saving file in encrypted store")
+			return err
+		}
+		println("Received and verified '" + filename + "' from " + peer.Name)
+		println("Saved at '" + file + "' in shared folder")
+		println("Saved at '" + encfile + "' in encrypted store")
+		return nil
+	}
+	if msg.Type == protocol.KEY_MIGRATION {
+		var unpack protocol.Key_Migration_Msg
+		err := json.Unmarshal(message, &unpack)
+		if err != nil {
+			log.Println("Error unpacking migration message")
+			return err
+		}
+
+		oldPub, err := hex.DecodeString(peer.IdentityPub)
+		if err != nil {
+			return err
+		}
+		newPub, err := hex.DecodeString(unpack.NewPub)
+		if err != nil {
+			return err
+		}
+		oldSig, err := hex.DecodeString(unpack.OldSig)
+		if err != nil {
+			return err
+		}
+		newSig, err := hex.DecodeString(unpack.NewSig)
+		if err != nil {
+			return err
+		}
+
+		err = crypt.Verify([]byte(oldPub), oldSig, newPub)
+		if err != nil {
+			log.Println("Couldn't verify migration message")
+			return err
+		}
+		err = crypt.Verify([]byte(newPub), newSig, oldPub)
+		if err != nil {
+			log.Println("Couldn't verify migration message")
+			return err
+		}
+
+		newFingerprint := hex.EncodeToString(crypt.Fingerprint(newPub))
+		trustStore.AddContact(peer.Name, newFingerprint)
+		println(peer.Name + " has a new identity fingerprint (" + newFingerprint[len(newFingerprint)-16:] + ")")
+		return nil
 	}
 
 	println(string(message))

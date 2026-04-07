@@ -18,6 +18,7 @@ import (
 	"github.com/dobaj/cisc468-final-project/peers"
 	"github.com/dobaj/cisc468-final-project/protocol"
 	"github.com/dobaj/cisc468-final-project/sharing"
+	"github.com/dobaj/cisc468-final-project/storage"
 	"github.com/dobaj/cisc468-final-project/trust"
 )
 
@@ -26,7 +27,7 @@ import (
 //     Message string `json:"message"`
 // }
 
-func listen(listener net.Listener, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager) {
+func listen(listener net.Listener, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager, storeStore *storage.StoreStore) {
 	// Server side of app
 	defer listener.Close()
 
@@ -38,7 +39,7 @@ func listen(listener net.Listener, i *crypt.Identity, trustedStore *trust.TrustS
 			continue
 		}
 		// peer discovery.Peer, i *crypt.Identity, trustedStore *trust.TrustStore, activeMap map[string]*protocol.ActivePeer, file_manager *sharing.FileManager
-		go peers.PeerConnect(conn, i, trustedStore, activeMap, file_manager, true)
+		go peers.PeerConnect(conn, i, trustedStore, activeMap, file_manager, storeStore, true)
 	}
 }
 
@@ -101,16 +102,20 @@ func main() {
 	var activeMap map[string]*protocol.ActivePeer
 	activeMap = make(map[string]*protocol.ActivePeer)
 	file_manager := sharing.NewFileManager("data/" + name + "/shared")
+	storeStore := storage.NewStoreStore(i, "data/"+name+"/storestore.json")
 
 	// mDNS
 	go discovery.Init(name, port)
 	go discovery.Listen()
 
-	go listen(listener, i, trustedStore, activeMap, file_manager)
-	// go sendMessage()
+	go listen(listener, i, trustedStore, activeMap, file_manager, storeStore)
+
+	// Wait for commands to exit before exiting the program
+	go commands.UserInput()
+	go commands.ReadInput()
 	var blockSync sync.WaitGroup
 	blockSync.Go(func() {
-		commands.CommandLoop(i, trustedStore, activeMap, file_manager)
+		commands.CommandLoop(i, trustedStore, activeMap, file_manager, storeStore)
 	})
 	blockSync.Wait()
 

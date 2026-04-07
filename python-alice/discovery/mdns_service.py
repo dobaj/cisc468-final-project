@@ -92,6 +92,9 @@ class MdnsService:
             raise Exception(f"Peer '{peer_name}' not found")
         return self.peer_details[peer_name]
 
+    def close(self):
+        self.zeroconf.close()
+
 
 mdns_service_instance = None
 
