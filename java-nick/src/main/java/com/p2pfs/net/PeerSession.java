@@ -21,20 +21,7 @@ import java.util.HexFormat;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/**
- * An authenticated, encrypted session with a remote peer.
- *
- * Supports two handshake modes:
- *   - Java protocol: AUTH_REQUEST → AUTH_RESPONSE → AUTH_SUCCESS (Ed25519-signed DH)
- *   - Native protocol: key_exchange → key_exchange → hello → hello (TOFU, used by Go/Python)
- *
- * After the handshake, session traffic is wrapped in:
- *   - Java:   {"type":"ENCRYPTED","iv":"<b64>","ciphertext":"<b64>"}
- *   - Native: {"type":"data","nonce":"<hex>","payload":"<hex>"}
- *
- * receiveEncrypted() detects both formats automatically.
- * sendEncrypted()    uses the format negotiated during handshake.
- */
+// encrypted peer session; Java (AUTH_REQUEST->AUTH_SUCCESS) or native Go/Python (key_exchange->hello, TOFU)
 public class PeerSession implements Closeable {
 
     private final Socket socket;
@@ -49,11 +36,7 @@ public class PeerSession implements Closeable {
     private boolean authenticated = false;
     private boolean nativeProtocol = false;
 
-    /**
-     * When non-null, receiveEncrypted() pulls from this queue instead of the socket.
-     * Used by outgoing sessions so a background handlePeerMessages thread owns the socket
-     * and routes incoming request/response messages appropriately.
-     */
+    // when set, receiveEncrypted() reads from this queue instead of the socket (background reader owns the socket)
     private volatile BlockingQueue<String> receiveQueue;
 
     private static final HexFormat HEX = HexFormat.of();
@@ -72,20 +55,13 @@ public class PeerSession implements Closeable {
     public String getRemotePeerName()     { return remotePeerName; }
     public Socket getSocket()             { return socket; }
 
-    /** Attach a queue so receiveEncrypted() reads from it instead of the socket. */
     public void setReceiveQueue(BlockingQueue<String> queue) { this.receiveQueue = queue; }
 
-    /** Enqueue a pre-decrypted message for receiveEncrypted() to return. */
     public void enqueueReceived(String json) throws InterruptedException { receiveQueue.put(json); }
 
-    // ── Incoming auto-detection ──────────────────────────────────────────────
+    // --- Incoming auto-detection ---
 
-    /**
-     * Called on the server side when we don't yet know the remote peer's protocol.
-     * Reads the first message and routes to the appropriate handshake.
-     *
-     * @param localPeerName  The local peer's display name (sent in the native "hello" message).
-     */
+    // sniffs the first message to pick Java vs native handshake path
     public void handshakeAutoDetect(String localPeerName) throws IOException {
         String firstMsg = framer.receive();
         String msgType = rawType(firstMsg);
@@ -100,12 +76,9 @@ public class PeerSession implements Closeable {
         }
     }
 
-    // ── Java protocol handshake ──────────────────────────────────────────────
+    // --- Java protocol handshake ---
 
-    /**
-     * Performs the Java handshake as the initiator.
-     * Flow: AUTH_REQUEST → AUTH_RESPONSE → AUTH_SUCCESS
-     */
+    // AUTH_REQUEST -> AUTH_RESPONSE -> AUTH_SUCCESS
     public void handshakeAsInitiator() throws IOException {
         nativeProtocol = false;
         SecureRandom random = new SecureRandom();
@@ -160,10 +133,7 @@ public class PeerSession implements Closeable {
         this.remotePeerName = contact.map(c -> c.name).orElse("unknown");
     }
 
-    /**
-     * Java-protocol responder: reads the first message (expects AUTH_REQUEST) and completes the handshake.
-     * Kept for tests and direct use; normally replaced by handshakeAutoDetect() on the server path.
-     */
+    // direct responder entry point, normally handshakeAutoDetect() is used instead
     public void handshakeAsResponder() throws IOException {
         nativeProtocol = false;
         handshakeAsResponderInternal(framer.receive());
@@ -223,14 +193,9 @@ public class PeerSession implements Closeable {
         this.remotePeerName = contact.map(c -> c.name).orElse("unknown");
     }
 
-    // ── Native protocol handshake (Go / Python) ──────────────────────────────
+    // --- Native protocol handshake (Go / Python) ---
 
-    /**
-     * Native initiator: send key_exchange first, receive theirs, exchange hellos.
-     * HKDF uses no salt and info="session key" (Go/Python default).
-     *
-     * @param localPeerName  The local peer's display name sent in the hello message.
-     */
+    // key_exchange -> key_exchange -> hello -> hello; HKDF info="session key" (Go/Python convention)
     public void handshakeNativeAsInitiator(String localPeerName) throws IOException {
         nativeProtocol = true;
         KeyExchange kx = new KeyExchange();
@@ -263,9 +228,6 @@ public class PeerSession implements Closeable {
         this.remotePeerName = theirHello.name;
     }
 
-    /**
-     * Native responder: already received the first key_exchange, respond with ours, then exchange hellos.
-     */
     private void handshakeNativeAsResponder(String firstMsgJson, String localPeerName) throws IOException {
         Messages.NativeKeyExchange theirKx = Messages.deserialize(firstMsgJson, Messages.NativeKeyExchange.class);
         byte[] remoteEph = HEX.parseHex(theirKx.pub);
@@ -300,10 +262,7 @@ public class PeerSession implements Closeable {
         framer.send(Messages.serialize(helloMsg));
     }
 
-    /**
-     * Checks the hello fingerprint and trust-stores the remote peer.
-     * Converts hex pub key → base64 for trust store compatibility.
-     */
+    // validates the hello fingerprint and stores the peer in base64 (trust store format)
     private void verifyNativeHello(Messages.NativeHello hello) throws IOException {
         byte[] remotePubBytes = HEX.parseHex(hello.identity_pub);
         String derivedFp = Identity.fingerprint(remotePubBytes); // already hex string
@@ -312,20 +271,14 @@ public class PeerSession implements Closeable {
             throw new IOException("Native hello fingerprint mismatch");
         }
 
-        // Store as base64 in trust store for uniform handling
         remoteIdentityPubBase64 = Base64.getEncoder().encodeToString(remotePubBytes);
         if (!verifyTrust(remoteIdentityPubBase64)) {
             throw new IOException("Native peer not trusted");
         }
     }
 
-    // ── Encrypted send / receive ─────────────────────────────────────────────
+    // --- Encrypted send / receive ---
 
-    /**
-     * Wraps json in the appropriate encryption envelope and sends it.
-     * Native sessions use {"type":"data","nonce":"<hex>","payload":"<hex>"}.
-     * Java sessions use  {"type":"ENCRYPTED","iv":"<b64>","ciphertext":"<b64>"}.
-     */
     public void sendEncrypted(String json) throws IOException {
         if (cipher == null) throw new IOException("Session not established");
         try {
@@ -346,11 +299,7 @@ public class PeerSession implements Closeable {
         }
     }
 
-    /**
-     * Reads the next encrypted envelope and returns the decrypted inner JSON.
-     * When a receiveQueue is attached (outgoing sessions with a background reader),
-     * blocks on the queue instead of reading the socket directly.
-     */
+    // reads from the queue if one is attached (background reader owns the socket), else reads directly
     public String receiveEncrypted() throws IOException {
         BlockingQueue<String> q = receiveQueue;
         if (q != null) {
@@ -366,10 +315,7 @@ public class PeerSession implements Closeable {
         return receiveEncryptedDirect();
     }
 
-    /**
-     * Reads and decrypts the next message directly from the socket.
-     * Used by the background handlePeerMessages thread which owns the socket read side.
-     */
+    // reads directly from the socket, only the background dispatch thread should call this
     public String receiveEncryptedDirect() throws IOException {
         if (cipher == null) throw new IOException("Session not established");
         String envJson = framer.receive();
@@ -396,16 +342,14 @@ public class PeerSession implements Closeable {
         }
     }
 
-    /**
-     * Sends a plaintext (unencrypted) error message. Used only during handshake.
-     */
+    // plaintext error, only valid during handshake before cipher is established
     public void sendError(String code, String message) {
         try {
             framer.send(Messages.serialize(new Messages.Error(code, message)));
         } catch (IOException ignored) {}
     }
 
-    // ── Trust helpers ────────────────────────────────────────────────────────
+    // --- Trust helpers ---
 
     private boolean verifyTrust(String identityPubBase64) {
         if (trustStore.isTrusted(identityPubBase64)) {
@@ -415,8 +359,7 @@ public class PeerSession implements Closeable {
         String fp = Identity.formatFingerprint(Identity.fingerprint(pubBytes));
         System.out.println("\n[!] Unknown peer with fingerprint:");
         System.out.println("    " + fp);
-        // Use println so async test harnesses can detect this line immediately
-        // (System.out.print has no newline and won't be flushed to async readers promptly).
+        // println (not print) so async readers get the line immediately
         System.out.println("Trust this peer? Enter a name to trust, or 'n' to reject:");
         System.out.flush();
         String response = input.readLine().trim();
@@ -433,9 +376,9 @@ public class PeerSession implements Closeable {
         }
     }
 
-    // ── Utilities ────────────────────────────────────────────────────────────
+    // --- Utilities ---
 
-    /** Returns the raw "type" string from a JSON message without requiring it to match a known enum. */
+    // extracts "type" without needing it to be a known enum value
     public static String rawType(String json) {
         JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
         return obj.get("type").getAsString();

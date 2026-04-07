@@ -6,22 +6,12 @@ import org.bouncycastle.crypto.params.HKDFParameters;
 
 import java.nio.charset.StandardCharsets;
 
-/**
- * HKDF-SHA256 key derivation as defined in RFC 5869.
- */
+// HKDF-SHA256 key derivation (RFC 5869)
 public final class Hkdf {
 
     private Hkdf() {}
 
-    /**
-     * Derives a key using HKDF-SHA256.
-     *
-     * @param ikm   input keying material (e.g., X25519 shared secret)
-     * @param salt  optional salt (nonce_initiator || nonce_responder)
-     * @param info  context and application-specific info string
-     * @param length desired output key length in bytes
-     * @return derived key bytes
-     */
+    // ikm = shared secret, salt = optional nonces, info = protocol label, length = output bytes
     public static byte[] derive(byte[] ikm, byte[] salt, String info, int length) {
         HKDFBytesGenerator hkdf = new HKDFBytesGenerator(new SHA256Digest());
         hkdf.init(new HKDFParameters(ikm, salt, info.getBytes(StandardCharsets.UTF_8)));
